@@ -3,14 +3,20 @@ import itertools
 import math
 import os
 from datetime import datetime
-
 import torch
 from transformers.trainer import get_scheduler
-
+from datasets import load_dataset
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+
+
+SYSTEM_PROMPT = (
+    'A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant '
+    'first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning '
+    'process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., '
+    '<think> reasoning process here </think><answer> answer here </answer>')
 
 
 def train(args):
@@ -54,7 +60,7 @@ def train(args):
     else:
         critic = None
 
-    if not args.remote_rm_url:
+    if not args.reward_funcs:
         reward_model = get_llm_for_sequence_regression(
             args.reward_pretrain,
             "reward",
@@ -123,17 +129,25 @@ def train(args):
         critic_optim = None
 
     # prepare datasets
-    prompts_data = blending_datasets(
-        args.prompt_data,
-        args.prompt_data_probs,
-        strategy,
-        args.seed,
-        max_count=args.max_samples,
-        return_eval=False,
-        train_split=args.prompt_split,
-    )
+    # prompts_data = blending_datasets(
+    #     args.prompt_data,
+    #     args.prompt_data_probs,
+    #     strategy,
+    #     args.seed,
+    #     max_count=args.max_samples,
+    #     return_eval=False,
+    #     train_split=args.prompt_split,
+    # )
+
+    prompts_data = load_dataset(args.prompt_data,
+                        name=args.dataset_config, split="train")
+    prompts_data = prompts_data.remove_columns('messages')
+
+    args.system_prompt = SYSTEM_PROMPT
+
+
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    prompts_dataset = PromptDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    prompts_dataset = PromptDataset(prompts_data, tokenizer, strategy, sys_template=args.system_prompt,input_template=args.input_template)
 
     if args.pretrain_data:
         pretrain_data = blending_datasets(
@@ -264,7 +278,7 @@ def train(args):
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
         # remote reward model
-        remote_rm_url=args.remote_rm_url,
+        reward_funcs=args.reward_funcs,
         save_hf_ckpt=args.save_hf_ckpt,
         disable_ds_ckpt=args.disable_ds_ckpt,
     )
@@ -382,6 +396,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--reward_pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--remote_rm_url", type=str, default=None, help="remote RM API")
+    parser.add_argument('--use_rule_based_reward', type=bool, default=False, help="use the relu based reward or not")
     parser.add_argument("--critic_pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--value_head_prefix", type=str, default="score")
 
@@ -393,6 +408,8 @@ if __name__ == "__main__":
         default="1.0",
         help="sampling probs for datasets",
     )
+    parser.add_argument("--dataset_config", type=str, default=None, help= "Dataset configuration name. Corresponds to the `name` argument of the `datasets.load_dataset` "
+            "function.")
     parser.add_argument("--prompt_split", type=str, default="train")
     parser.add_argument("--pretrain_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(

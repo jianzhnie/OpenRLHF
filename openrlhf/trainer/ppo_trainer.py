@@ -2,7 +2,7 @@ import os
 import os.path
 from abc import ABC
 from typing import Any, Callable, Dict, List, Optional
-
+import inspect
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
@@ -12,6 +12,7 @@ from tqdm import tqdm
 from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
 from openrlhf.models.utils import masked_mean, unpacking_samples, compute_approx_kl
 from openrlhf.utils.distributed_sampler import DistributedSampler
+from openrlhf.trainer.ppo_utils.reward_funcs import relu_based_reward_func_dict
 
 from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
 
@@ -111,7 +112,6 @@ class PPOTrainer(ABC):
         self.prompt_max_len = prompt_max_len
         self.ema_beta = ema_beta
         self.gradient_checkpointing = gradient_checkpointing
-        self.reward_fn = reward_fn
 
         self.actor = actor
         self.critic = critic
@@ -130,6 +130,36 @@ class PPOTrainer(ABC):
 
         self.freezing_actor_steps = getattr(self.args, "freezing_actor_steps", -1)
 
+        if not isinstance(reward_func_names, list):
+            reward_func_names = [reward_func_names]
+
+        self.reward_func_names = reward_func_names
+        reward_funcs = [] * len(self.reward_func_names)
+        if reward_func_names:
+            for i, reward_func_name in enumerate(reward_func_names):
+                if reward_func_name in relu_based_reward_func_dict:
+                    reward_func_class = relu_based_reward_func_dict[reward_func_name]
+                    reward_func_args = list(inspect.signature(reward_func_class.__init__).parameters)
+                    reward_func_kwargs = {
+                        key: getattr(self.args, key)
+                        for key in reward_func_args if key not in ['self', 'args', 'kwargs'] and hasattr(self.args, key)
+                    }
+                    reward_funcs[i] = reward_func_class(**reward_func_kwargs)
+                else:
+                    raise ValueError(f'reward_function {reward_func_name} is not implemented in openrlhf.ppo.ppo_utils.reward_funcs')
+        
+        self.reward_funcs = reward_funcs
+        if not self.reward_funcs and not self.reward_model:
+            raise ValueError("You must specify reward_funcs or reward_model")
+
+        if self.args.reward_weights is not None:
+            if len(self.args.reward_weights) != len(reward_funcs):
+                raise ValueError(f'Number of reward weights ({len(self.args.reward_weights)}) must match number of reward '
+                                    f'functions ({len(reward_funcs)})')
+            self.reward_weights = torch.tensor(self.args.reward_weights, dtype=torch.float32)
+        else:
+            self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
+
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8
 
@@ -139,16 +169,18 @@ class PPOTrainer(ABC):
             self.kl_ctl = FixedKLController(init_kl_coef)
 
         self.experience_maker = NaiveExperienceMaker(
-            actor,
-            critic,
-            reward_model,
-            initial_model,
-            tokenizer,
-            prompt_max_len,
-            self.kl_ctl,
-            strategy,
-            remote_rm_url,
-            reward_fn,
+            actor=actor,
+            critic=critic,
+            reward_model=reward_model,
+            initial_model=initial_model,
+            tokenizer=tokenizer,
+            prompt_max_len=prompt_max_len,
+            kl_controller=self.kl_ctl,
+            strategy=strategy,
+            remote_rm_url=remote_rm_url,
+            reward_func_names=self.reward_func_names,
+            reward_funcs=self.reward_funcs,
+            reward_weights=self.reward_weights
         )
         packing_samples = getattr(self.args, "packing_samples", False)
         self.replay_buffer = NaiveReplayBuffer(
@@ -227,9 +259,9 @@ class PPOTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
 
-            for rand_prompts, labels in self.prompts_dataloader:
+            for batch_inputs in self.prompts_dataloader:
                 for i, experience in enumerate(
-                    self.experience_maker.make_experience_list(rand_prompts, labels, **self.generate_kwargs)
+                    self.experience_maker.make_experience_list(batch_inputs, **self.generate_kwargs)
                 ):
                     if i == 0:
                         output = self.tokenizer.batch_decode(

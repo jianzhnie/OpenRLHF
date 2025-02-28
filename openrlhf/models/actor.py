@@ -153,6 +153,11 @@ class Actor(nn.Module):
         return self.process_sequences(sequences, input_ids.size(1), eos_token_id, pad_token_id)
 
     def process_sequences(self, sequences: torch.Tensor, input_len, eos_token_id, pad_token_id):
+
+        # 创建注意力掩码：1表示需要关注的token，0表示需要忽略的token
+        # ne() 是 "not equal" 的缩写，返回一个布尔张量
+        # 如果token既不是EOS也不是PAD，则为1，否则为0
+
         attention_mask = (sequences.ne(eos_token_id) & sequences.ne(pad_token_id)).to(dtype=torch.long)
         seq_length = attention_mask.size(1)
 
@@ -165,20 +170,39 @@ class Actor(nn.Module):
         #             sequences[i][min(t + 1, seq_length - 1)] = eos_token_id
         #             break
         #
+
+        # 找到每个序列最后一个有效token的位置
+        # fliplr()：水平翻转张量
+        # argmax()：找到第一个1的位置（因为翻转了，所以是最后一个1）
+        # clamp(min=1)：确保索引至少为1
         eos_indices = seq_length - attention_mask.long().fliplr().argmax(dim=1, keepdim=True).clamp(min=1)
+        # 在找到的位置放置EOS token
+        # scatter_：在指定位置(eos_indices)填充指定值(eos_token_id)
         sequences.scatter_(dim=1, index=eos_indices, value=eos_token_id)
 
         # For Llama3 and Qwen2 models, there are some eos_tokens in the middle of the prompt.
+        # 处理特殊情况：对于Llama3和Qwen2模型，提示词中可能包含EOS token
+        # 找到每个序列第一个有效token的位置
         first_token_indices = attention_mask.long().argmax(dim=1, keepdim=True)
+        # 创建一个范围张量，用于生成掩码
         mask = torch.arange(seq_length).unsqueeze(0).expand(sequences.size(0), -1).to(device=sequences.device)
+        # 创建最终的注意力掩码：只关注从第一个token到EOS token之间的内容
         attention_mask = (mask >= first_token_indices) & (mask <= eos_indices).to(dtype=torch.long)
 
         # in RL, state_i (current token) + action_i (next token) -> state_i+1 (next token)
+        # 在强化学习中，我们关注：
+        # state_i (当前token) + action_i (下一个token) -> state_i+1 (下一个token)
+        # 提取除最后一个token之外的所有token作为状态序列
         state_seq = sequences[:, input_len - 1 : -1]
+        # 创建动作掩码：标记哪些位置是有效的动作
+        # 如果token不是EOS且不是PAD，则认为是有效动作
         action_mask = state_seq.ne(eos_token_id) & state_seq.ne(pad_token_id)
+        # 确保第一个位置总是有效的
         action_mask[:, 0] = 1
 
+        
         return sequences, attention_mask, action_mask
+    
 
     def forward(
         self,

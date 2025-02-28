@@ -14,6 +14,7 @@ from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
 
+
 logger = init_logger(__name__)
 
 
@@ -116,6 +117,7 @@ class Samples:
     action_mask: Optional[torch.BoolTensor]
     num_actions: Union[int, torch.Tensor]
     packed_seq_lens: Optional[torch.Tensor]
+    prompt_seq_lens: Optional[torch.Tensor]
     response_length: torch.Tensor
     total_length: torch.Tensor
     prompts: list[str]
@@ -138,7 +140,9 @@ class NaiveExperienceMaker(ABC):
         kl_controller,
         strategy=None,
         remote_rm_url: list[str] = None,
-        reward_fn=None,
+        reward_func_names=None,
+        reward_funcs=None,
+        reward_weights=None,
     ) -> None:
         super().__init__()
         self.actor = actor
@@ -150,7 +154,9 @@ class NaiveExperienceMaker(ABC):
         self.prompt_max_len = prompt_max_len
         self.kl_ctl = kl_controller
         self.strategy = strategy
-        self.reward_fn = reward_fn
+        self.reward_func_names = reward_func_names
+        self.reward_funcs = reward_funcs
+        self.reward_weights =reward_weights
         self.perf_stats = None
         self.advantage_estimator = strategy.args.advantage_estimator
 
@@ -187,7 +193,7 @@ class NaiveExperienceMaker(ABC):
 
     @torch.no_grad()
     def make_experience_list(
-        self, all_prompts: Union[str, List[str]], all_labels, **generate_kwargs
+        self, bath_inputs, **generate_kwargs
     ) -> List[Experience]:
         """
         Make a list of experience with the micro_rollout_batch_size.
@@ -197,7 +203,7 @@ class NaiveExperienceMaker(ABC):
         After that, we will calculate the advantages and returns for each experience.
         """
         args = self.strategy.args
-        samples_list = self.generate_samples(all_prompts, all_labels, **generate_kwargs)
+        samples_list = self.generate_samples(bath_inputs, **generate_kwargs)
         torch.distributed.barrier()
 
         experiences = []
@@ -257,7 +263,7 @@ class NaiveExperienceMaker(ABC):
         return experiences
 
     @torch.no_grad()
-    def generate_samples(self, all_prompts: List[str], all_labels, **generate_kwargs) -> List[Samples]:
+    def generate_samples(self, batch_inputs, **generate_kwargs) -> List[Samples]:
         """
         Generate samples and return in batches.
         """
@@ -265,6 +271,8 @@ class NaiveExperienceMaker(ABC):
         args = self.strategy.args
         self.actor.eval()
         # sample multiple response
+        all_prompts = batch_inputs['prompt'] 
+        all_labels = batch_inputs['label']
         all_prompts = sum([[prompt] * args.n_samples_per_prompt for prompt in all_prompts], [])
         all_labels = sum([[label] * args.n_samples_per_prompt for label in all_labels], [])
         samples_list = []
@@ -279,6 +287,7 @@ class NaiveExperienceMaker(ABC):
                 action_mask=action_mask,
                 num_actions=action_mask.size(1),
                 packed_seq_lens=None,
+                prompt_seq_lens=inputs['attention_mask'].float().sum(dim=-1),
                 response_length=action_mask.float().sum(dim=-1),
                 total_length=attention_mask.float().sum(dim=-1),
                 prompts=prompts,
@@ -320,9 +329,14 @@ class NaiveExperienceMaker(ABC):
             value = self.critic(sequences, num_actions, attention_mask)
         else:
             value = None
-
+        
         # rewards
-        if self.remote_rm_url is not None:
+        rewards_result_dict  = {}
+        if self.reward_fn is not None:
+            completion_ids = sequences[:, -num_actions:]
+            completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+
+        elif self.remote_rm_url is not None:
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
             if self.custom_reward_func:
@@ -371,6 +385,17 @@ class NaiveExperienceMaker(ABC):
             info,
             kl,
         )
+
+    def compute_func_rewards(self, prompts, completions, reward_kwargs) -> None:
+        rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs))
+        for i, reward_func in enumerate(self.reward_funcs):
+            # Repeat all input columns (but "prompt" and "completion") to match the number of generations
+            output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
+            rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32)
+
+        # Apply weights to each reward function's output and sum
+        rewards = (rewards_per_func * self.reward_weights).unsqueeze(0).sum(dim=1)
+        return rewards
 
     @torch.no_grad()
     def process_experiences(self, experiences: List[Experience]) -> Tuple[List[Experience], List[torch.Tensor]]:

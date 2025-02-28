@@ -1,21 +1,40 @@
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from trl.data_utils import maybe_apply_chat_template
 
 
-def preprocess_data(data, input_template=None, input_key="input", label_key=None, apply_chat_template=None) -> str:
+def preprocess_data(data, input_key="input", label_key=None, system_prompt=None, input_template=None, tokenizer=None, apply_chat_template:bool=False) -> str:
+    keys = [
+        key for key in data
+        if key not in ['input_key', label_key]
+    ]
+    reward_kwargs = {
+        key: data[key]
+        for key in keys
+    }
     if apply_chat_template:
-        chat = data[input_key]
-        if isinstance(chat, str):
-            chat = [{"role": "user", "content": chat}]
-        prompt = apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+        prompt = []
+        if system_prompt is not None:
+            prompt.append({
+                'role': 'system',
+                'content': system_prompt
+            })
+        prompt.append({'role': 'user', 'content': data[input_key]})
+        example = {'prompt': prompt}
+        prompt_text = maybe_apply_chat_template(example, tokenizer)['prompt']
     else:
-        prompt = data[input_key]
+        prompt_text = data[input_key]
         if input_template:
-            prompt = input_template.format(prompt)
+            prompt_text = input_template.format(prompt)
 
     # for Reinforced Fine-tuning
-    label = "" if label_key is None else data[label_key]
-    return prompt, label
+    label_text = "" if label_key is None else data[label_key]
+    processed_input = {
+        'prompt': prompt_text,
+        'label': label_text,
+        **reward_kwargs
+    }
+    return processed_input
 
 
 class PromptDataset(Dataset):
@@ -33,6 +52,7 @@ class PromptDataset(Dataset):
         dataset,
         tokenizer,
         strategy,
+        sys_template=None,
         input_template=None,
     ) -> None:
         super().__init__()
@@ -45,19 +65,14 @@ class PromptDataset(Dataset):
         label_key = getattr(self.strategy.args, "label_key", None)
         apply_chat_template = getattr(self.strategy.args, "apply_chat_template", False)
 
-        if apply_chat_template:
-            apply_chat_template = self.tokenizer.apply_chat_template
-
-        self.prompts = []
-        self.labels = []
+        self.processed_inputs = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            prompt, label = preprocess_data(data, input_template, input_key, label_key, apply_chat_template)
-            self.prompts.append(prompt)
-            self.labels.append(label)
+            processed_input = preprocess_data(data, input_key, label_key,  sys_template, input_template, tokenizer, apply_chat_template)
+            self.processed_inputs.append(processed_input)
 
     def __len__(self):
-        length = len(self.prompts)
+        length = len(self.processed_inputs)
         return length
 
     def __getitem__(self, idx):
-        return self.prompts[idx], self.labels[idx]
+        return self.processed_inputs[idx]
