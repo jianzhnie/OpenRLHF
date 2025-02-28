@@ -391,15 +391,23 @@ class NaiveExperienceMaker(ABC):
         )
 
     def compute_func_rewards(self, prompts, completions, reward_kwargs) -> None:
+        reward_func_metrics = {}
+        for i, func_name in enumerate(self.reward_func_names):
+            reward_func_metrics[func_name] = []
+
         rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs))
         for i, reward_func in enumerate(self.reward_funcs):
             # Repeat all input columns (but "prompt" and "completion") to match the number of generations
             output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
             rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32)
 
+        for i, func_name in enumerate(self.reward_func_names):
+            reward_func_metrics[func_name].append(
+            rewards_per_func[:, i])
+
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights).unsqueeze(0).sum(dim=1)
-        return rewards
+        return rewards, reward_func_metrics
 
     @torch.no_grad()
     def process_experiences(self, experiences: List[Experience]) -> Tuple[List[Experience], List[torch.Tensor]]:
