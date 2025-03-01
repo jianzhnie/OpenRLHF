@@ -292,6 +292,7 @@ class NaiveExperienceMaker(ABC):
                 total_length=attention_mask.float().sum(dim=-1),
                 prompts=prompts,
                 labels=labels,
+                pad_len=None,
             )
             samples_list.append(samples)
         return samples_list
@@ -331,25 +332,25 @@ class NaiveExperienceMaker(ABC):
             value = None
 
         # rewards
-        rewards_result_dict = {}
-        if self.reward_fn is not None:
+        if self.reward_funcs:
             completion_ids = sequences[:, -num_actions:]
             completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+            rewards, reward_func_metrics = self.compute_func_rewards(completions, samples.labels)
 
         elif self.remote_rm_url is not None:
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
             if self.custom_reward_func:
-                r = self.custom_reward_func(queries, samples.prompts, samples.labels).to(
+                rewards = self.custom_reward_func(queries, samples.prompts, samples.labels).to(
                     device=action_log_probs.device
                 )
             else:
-                r = remote_rm_fn(
+                rewards = remote_rm_fn(
                     self.remote_rm_url, queries=queries, prompts=samples.prompts, labels=samples.labels
                 ).to(device=action_log_probs.device)
         else:
             # local RM
-            r = self.reward_model(sequences, attention_mask)
+            rewards = self.reward_model(sequences, attention_mask)
 
         if (self.initial_model is not None) and (not self.strategy.args.use_kl_loss):
             kl = compute_approx_kl(
@@ -363,10 +364,11 @@ class NaiveExperienceMaker(ABC):
 
         info = {
             "kl": masked_mean(kl, action_mask, dim=-1),
-            "reward": r,
+            "reward": rewards,
             "response_length": samples.response_length,
             "total_length": samples.total_length,
             "num_actions": num_actions,
+            "reward_func_metrics": reward_func_metrics if self.reward_funcs else None,
         }
         # reset model state
         self.actor.train()
@@ -386,23 +388,77 @@ class NaiveExperienceMaker(ABC):
             kl,
         )
 
-    def compute_func_rewards(self, prompts, completions, reward_kwargs) -> None:
+    def compute_func_rewards(self, completions, solutions, reward_kwargs=None) -> Tuple[torch.Tensor, dict]:
+        """
+        计算多个自定义奖励函数的值并返回加权组合结果
+
+        参数:
+        - completions: 模型生成的完成序列
+        - solutions: 参考答案
+        - reward_kwargs: 额外的关键字参数
+
+        返回:
+        - rewards: 加权组合后的奖励值张量
+        - reward_func_metrics: 各奖励函数的指标字典
+        """
+
+        # 初始化每个奖励函数的指标字典
         reward_func_metrics = {}
         for i, func_name in enumerate(self.reward_func_names):
             reward_func_metrics[func_name] = []
 
-        rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs))
+        # 为每个生成的序列计算每个奖励函数的值
+        rewards_per_func = torch.zeros(len(completions), len(self.reward_funcs))
         for i, reward_func in enumerate(self.reward_funcs):
-            # Repeat all input columns (but "prompt" and "completion") to match the number of generations
-            output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
+            output_reward_func = reward_func(completions=completions, solution=solutions, **reward_kwargs)
             rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32)
 
+        # 记录每个奖励函数的指标
         for i, func_name in enumerate(self.reward_func_names):
             reward_func_metrics[func_name].append(rewards_per_func[:, i])
 
-        # Apply weights to each reward function's output and sum
+        # 应用权重并求和得到最终奖励值
         rewards = (rewards_per_func * self.reward_weights).unsqueeze(0).sum(dim=1)
+
         return rewards, reward_func_metrics
+
+    def aggregate_reward_metrics(self, experiences: List[Experience]) -> dict:
+        """
+        Aggregates reward function metrics across all experiences by reward function name.
+
+        Args:
+            experiences: List of Experience objects containing reward metrics
+
+        Returns:
+            dict: Mapping of reward function name to its average value across all experiences
+        """
+        # Initialize aggregated metrics dict
+        aggregated_metrics = {}
+
+        # Early return if no experiences or no metrics
+        if not experiences or "reward_func_metrics" not in experiences[0].info:
+            return aggregated_metrics
+
+        # Get reward function names from first experience
+        reward_names = experiences[0].info["reward_func_metrics"].keys()
+
+        # Initialize lists to store values for each reward function
+        for name in reward_names:
+            aggregated_metrics[name] = []
+
+        # Collect all values for each reward function
+        for exp in experiences:
+            metrics = exp.info["reward_func_metrics"]
+            for name in reward_names:
+                # Concatenate all tensor values for this reward function
+                aggregated_metrics[name].extend(metrics[name])
+
+        # Calculate mean for each reward function
+        for name in reward_names:
+            values = torch.cat(aggregated_metrics[name])
+            aggregated_metrics[name] = values.mean().item()
+
+        return aggregated_metrics
 
     @torch.no_grad()
     def process_experiences(self, experiences: List[Experience]) -> Tuple[List[Experience], List[torch.Tensor]]:

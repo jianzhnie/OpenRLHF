@@ -1,7 +1,7 @@
 import os
 import os.path
 from abc import ABC
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Union, Callable, Dict, List, Optional
 import inspect
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
 from openrlhf.models.utils import masked_mean, unpacking_samples, compute_approx_kl
 from openrlhf.models.ring_attn_utils import unpad_sequences, pad_sequences
 from openrlhf.utils.distributed_sampler import DistributedSampler
-from openrlhf.trainer.ppo_utils.reward_funcs import relu_based_reward_func_dict
+from openrlhf.trainer.ppo_utils.reward_funcs import relu_based_reward_func_mapping
 
 from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
 
@@ -87,7 +87,7 @@ class PPOTrainer(ABC):
         prompt_max_len: int = 128,
         dataloader_pin_memory: bool = True,
         remote_rm_url: str = None,
-        reward_fn: Callable[[List[torch.Tensor]], torch.Tensor] = None,
+        reward_func_names: Union[List[str], str] = None,
         save_hf_ckpt: bool = False,
         disable_ds_ckpt: bool = False,
         **generate_kwargs,
@@ -136,10 +136,10 @@ class PPOTrainer(ABC):
 
         self.reward_func_names = reward_func_names
         reward_funcs = [] * len(self.reward_func_names)
-        if reward_func_names:
+        if self.reward_func_names:
             for i, reward_func_name in enumerate(reward_func_names):
-                if reward_func_name in relu_based_reward_func_dict:
-                    reward_func_class = relu_based_reward_func_dict[reward_func_name]
+                if reward_func_name in relu_based_reward_func_mapping:
+                    reward_func_class = relu_based_reward_func_mapping[reward_func_name]
                     reward_func_args = list(inspect.signature(reward_func_class.__init__).parameters)
                     reward_func_kwargs = {
                         key: getattr(self.args, key)

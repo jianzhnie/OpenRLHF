@@ -61,7 +61,7 @@ def train(args):
     else:
         critic = None
 
-    if not args.reward_funcs:
+    if not args.remote_rm_url and not args.rereward_func_names and args.reward_pretrain:
         reward_model = get_llm_for_sequence_regression(
             args.reward_pretrain,
             "reward",
@@ -281,7 +281,8 @@ def train(args):
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
         # remote reward model
-        reward_funcs=args.reward_funcs,
+        remote_rm_url=args.remote_rm_url,
+        reward_func_names=args.reward_func_names,
         save_hf_ckpt=args.save_hf_ckpt,
         disable_ds_ckpt=args.disable_ds_ckpt,
     )
