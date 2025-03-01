@@ -3,25 +3,24 @@ from tqdm import tqdm
 from trl.data_utils import maybe_apply_chat_template
 
 
-def preprocess_data(data, input_key="input", label_key=None, system_prompt=None, input_template=None, tokenizer=None, apply_chat_template:bool=False) -> str:
-    keys = [
-        key for key in data
-        if key not in ['input_key', label_key]
-    ]
-    reward_kwargs = {
-        key: data[key]
-        for key in keys
-    }
+def preprocess_data(
+    data,
+    input_key="input",
+    label_key=None,
+    system_prompt=None,
+    input_template=None,
+    tokenizer=None,
+    apply_chat_template: bool = False,
+) -> str:
+    keys = [key for key in data if key not in ["input_key", label_key]]
+    reward_kwargs = {key: data[key] for key in keys}
     if apply_chat_template:
         prompt = []
         if system_prompt is not None:
-            prompt.append({
-                'role': 'system',
-                'content': system_prompt
-            })
-        prompt.append({'role': 'user', 'content': data[input_key]})
-        example = {'prompt': prompt}
-        prompt_text = maybe_apply_chat_template(example, tokenizer)['prompt']
+            prompt.append({"role": "system", "content": system_prompt})
+        prompt.append({"role": "user", "content": data[input_key]})
+        example = {"prompt": prompt}
+        prompt_text = maybe_apply_chat_template(example, tokenizer)["prompt"]
     else:
         prompt_text = data[input_key]
         if input_template:
@@ -29,11 +28,7 @@ def preprocess_data(data, input_key="input", label_key=None, system_prompt=None,
 
     # for Reinforced Fine-tuning
     label_text = "" if label_key is None else data[label_key]
-    processed_input = {
-        'prompt': prompt_text,
-        'label': label_text,
-        **reward_kwargs
-    }
+    processed_input = {"prompt": prompt_text, "label": label_text, **reward_kwargs}
     return processed_input
 
 
@@ -67,7 +62,9 @@ class PromptDataset(Dataset):
 
         self.processed_inputs = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            processed_input = preprocess_data(data, input_key, label_key,  sys_template, input_template, tokenizer, apply_chat_template)
+            processed_input = preprocess_data(
+                data, input_key, label_key, sys_template, input_template, tokenizer, apply_chat_template
+            )
             self.processed_inputs.append(processed_input)
 
     def __len__(self):

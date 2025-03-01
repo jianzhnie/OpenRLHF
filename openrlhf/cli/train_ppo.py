@@ -13,10 +13,11 @@ from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
 
 
 SYSTEM_PROMPT = (
-    'A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant '
-    'first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning '
-    'process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., '
-    '<think> reasoning process here </think><answer> answer here </answer>')
+    "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
+    "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
+    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
+    "<think> reasoning process here </think><answer> answer here </answer>"
+)
 
 
 def train(args):
@@ -139,15 +140,17 @@ def train(args):
     #     train_split=args.prompt_split,
     # )
 
-    prompts_data = load_dataset(args.prompt_data,
-                        name=args.dataset_config, split="train")
-    prompts_data = prompts_data.remove_columns('messages')
+    prompts_data = load_dataset(args.prompt_data, name=args.dataset_config, split="train")
+    prompts_data = prompts_data.remove_columns(
+        [col for col in prompts_data.column_names if col not in [args.input_key, args.label_key]]
+    )
 
     args.system_prompt = SYSTEM_PROMPT
 
-
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    prompts_dataset = PromptDataset(prompts_data, tokenizer, strategy, sys_template=args.system_prompt,input_template=args.input_template)
+    prompts_dataset = PromptDataset(
+        prompts_data, tokenizer, strategy, sys_template=args.system_prompt, input_template=args.input_template
+    )
 
     if args.pretrain_data:
         pretrain_data = blending_datasets(
@@ -396,7 +399,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--reward_pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--remote_rm_url", type=str, default=None, help="remote RM API")
-    parser.add_argument('--use_rule_based_reward', type=bool, default=False, help="use the relu based reward or not")
+    parser.add_argument("--use_rule_based_reward", type=bool, default=False, help="use the relu based reward or not")
     parser.add_argument("--critic_pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--value_head_prefix", type=str, default="score")
 
@@ -408,8 +411,12 @@ if __name__ == "__main__":
         default="1.0",
         help="sampling probs for datasets",
     )
-    parser.add_argument("--dataset_config", type=str, default=None, help= "Dataset configuration name. Corresponds to the `name` argument of the `datasets.load_dataset` "
-            "function.")
+    parser.add_argument(
+        "--dataset_config",
+        type=str,
+        default=None,
+        help="Dataset configuration name. Corresponds to the `name` argument of the `datasets.load_dataset` function.",
+    )
     parser.add_argument("--prompt_split", type=str, default="train")
     parser.add_argument("--pretrain_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(

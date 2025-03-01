@@ -61,7 +61,7 @@ class CriticPPOTrainer(PPOTrainer):
         return self.training_step_critic(experience)
 
 
-@ray.remote(num_gpus=1)
+@ray.remote
 class CriticModelRayActor(BasePPORole):
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, max_steps):
         args = strategy.args
@@ -159,7 +159,12 @@ class CriticModelRayActor(BasePPORole):
         self.critic.eval()
         with torch.no_grad():
             value = self.critic(
-                sequences.to(device), num_actions, attention_mask.to(device), ring_attn_group=self.strategy.ring_attn_group, values_allgather=True, packed_seq_lens=packed_seq_lens
+                sequences.to(device),
+                num_actions,
+                attention_mask.to(device),
+                ring_attn_group=self.strategy.ring_attn_group,
+                values_allgather=True,
+                packed_seq_lens=packed_seq_lens,
             )
         self.critic.train()  # reset model state
         return value.to("cpu")

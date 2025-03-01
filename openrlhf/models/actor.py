@@ -8,8 +8,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
-from flash_attn.utils.distributed import all_gather
-
+from openrlhf import IS_NPU_AVAILABLE
 from .ring_attn_utils import convert_ring_attn_params
 from .utils import log_probs_from_logits, reset_position_ids
 
@@ -53,6 +52,8 @@ class Actor(nn.Module):
 
         if isinstance(pretrain_or_model, str):
             attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
+            if IS_NPU_AVAILABLE:
+                attn_implementation = "sdpa" if use_flash_attention_2 else "eager"
 
             # Note: dschf is defined in function scope to avoid global effects
             # https://huggingface.co/docs/transformers/deepspeed#non-trainer-deepspeed-integration
@@ -121,7 +122,9 @@ class Actor(nn.Module):
             self.model = pretrain_or_model
 
     @torch.no_grad()
-    def generate(self, input_ids: torch.Tensor, **kwargs) -> Union[
+    def generate(
+        self, input_ids: torch.Tensor, **kwargs
+    ) -> Union[
         Tuple[torch.LongTensor, torch.LongTensor],
         Tuple[torch.LongTensor, torch.LongTensor, torch.BoolTensor],
     ]:
@@ -155,7 +158,6 @@ class Actor(nn.Module):
         return self.process_sequences(sequences, input_ids.size(1), eos_token_id, pad_token_id)
 
     def process_sequences(self, sequences: torch.Tensor, input_len, eos_token_id, pad_token_id):
-
         # 创建注意力掩码：1表示需要关注的token，0表示需要忽略的token
         # ne() 是 "not equal" 的缩写，返回一个布尔张量
         # 如果token既不是EOS也不是PAD，则为1，否则为0
@@ -202,9 +204,7 @@ class Actor(nn.Module):
         # 确保第一个位置总是有效的
         action_mask[:, 0] = 1
 
-        
         return sequences, attention_mask, action_mask
-    
 
     def forward(
         self,

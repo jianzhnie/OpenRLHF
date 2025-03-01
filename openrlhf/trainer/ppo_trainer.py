@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict, List, Optional
 import inspect
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -93,9 +92,9 @@ class PPOTrainer(ABC):
         disable_ds_ckpt: bool = False,
         **generate_kwargs,
     ) -> None:
-        assert (
-            not isinstance(reward_model, List) or len(reward_model) == 1 or reward_fn is not None
-        ), "reward_fn must be specified if using multiple reward models"
+        assert not isinstance(reward_model, List) or len(reward_model) == 1 or reward_fn is not None, (
+            "reward_fn must be specified if using multiple reward models"
+        )
 
         super().__init__()
         self.strategy = strategy
@@ -144,20 +143,25 @@ class PPOTrainer(ABC):
                     reward_func_args = list(inspect.signature(reward_func_class.__init__).parameters)
                     reward_func_kwargs = {
                         key: getattr(self.args, key)
-                        for key in reward_func_args if key not in ['self', 'args', 'kwargs'] and hasattr(self.args, key)
+                        for key in reward_func_args
+                        if key not in ["self", "args", "kwargs"] and hasattr(self.args, key)
                     }
                     reward_funcs[i] = reward_func_class(**reward_func_kwargs)
                 else:
-                    raise ValueError(f'reward_function {reward_func_name} is not implemented in openrlhf.ppo.ppo_utils.reward_funcs')
-        
+                    raise ValueError(
+                        f"reward_function {reward_func_name} is not implemented in openrlhf.ppo.ppo_utils.reward_funcs"
+                    )
+
         self.reward_funcs = reward_funcs
         if not self.reward_funcs and not self.reward_model:
             raise ValueError("You must specify reward_funcs or reward_model")
 
         if self.args.reward_weights is not None:
             if len(self.args.reward_weights) != len(reward_funcs):
-                raise ValueError(f'Number of reward weights ({len(self.args.reward_weights)}) must match number of reward '
-                                    f'functions ({len(reward_funcs)})')
+                raise ValueError(
+                    f"Number of reward weights ({len(self.args.reward_weights)}) must match number of reward "
+                    f"functions ({len(reward_funcs)})"
+                )
             self.reward_weights = torch.tensor(self.args.reward_weights, dtype=torch.float32)
         else:
             self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
@@ -182,7 +186,7 @@ class PPOTrainer(ABC):
             remote_rm_url=remote_rm_url,
             reward_func_names=self.reward_func_names,
             reward_funcs=self.reward_funcs,
-            reward_weights=self.reward_weights
+            reward_weights=self.reward_weights,
         )
         packing_samples = getattr(self.args, "packing_samples", False)
         self.replay_buffer = NaiveReplayBuffer(
@@ -383,11 +387,7 @@ class PPOTrainer(ABC):
             # pad seq makes the sequence a multiple of ring_attention_size.
             if self.strategy.ring_attn_group is not None:
                 pad_len, sequences, attention_mask, num_actions, packed_seq_lens = pad_sequences(
-                    sequences, 
-                    attention_mask, 
-                    num_actions, 
-                    packed_seq_lens, 
-                    self.strategy.ring_attn_group
+                    sequences, attention_mask, num_actions, packed_seq_lens, self.strategy.ring_attn_group
                 )
             if self.args.use_kl_loss and experience.base_action_log_probs is not None:
                 base_action_log_probs = torch.cat(experience.base_action_log_probs, dim=0).unsqueeze(0)
@@ -416,12 +416,12 @@ class PPOTrainer(ABC):
             assert pad_len is not None
             sequences, attention_mask, num_actions, packed_seq_lens, action_log_probs, _, _ = unpad_sequences(
                 pad_len=pad_len,
-                sequences=sequences, 
-                attention_mask=attention_mask, 
-                num_actions=num_actions, 
-                packed_seq_lens=packed_seq_lens, 
+                sequences=sequences,
+                attention_mask=attention_mask,
+                num_actions=num_actions,
+                packed_seq_lens=packed_seq_lens,
                 action_log_probs=action_log_probs,
-                ring_attn_group=self.strategy.ring_attn_group
+                ring_attn_group=self.strategy.ring_attn_group,
             )
 
         # loss function
@@ -438,10 +438,10 @@ class PPOTrainer(ABC):
                     action_log_probs,
                     base_action_log_probs,
                     experience.action_mask,
-                    use_kl_estimator_k3 = self.args.use_kl_estimator_k3,
+                    use_kl_estimator_k3=self.args.use_kl_estimator_k3,
                 )
             else:
-                kl = torch.zeros_like(action_log_probs, dtype=action_log_probs.dtype, device = action_log_probs.device)
+                kl = torch.zeros_like(action_log_probs, dtype=action_log_probs.dtype, device=action_log_probs.device)
 
             if not self.args.packing_samples:
                 kl_mean = masked_mean(kl, experience.action_mask, dim=-1)
@@ -450,7 +450,7 @@ class PPOTrainer(ABC):
                 # within dataset.
 
                 kl = unpacking_samples(kl, num_actions)
-                kl_mean = torch.tensor([each_kl.mean() for each_kl in kl], device = action_log_probs.device)
+                kl_mean = torch.tensor([each_kl.mean() for each_kl in kl], device=action_log_probs.device)
 
             kl_loss = kl_mean.mean()
             experience.info["kl"] = kl_loss.item()
@@ -522,11 +522,7 @@ class PPOTrainer(ABC):
             # pad seq makes the sequence len a multiple of ring_attention_size.
             if self.strategy.ring_attn_group is not None:
                 pad_len, sequences, attention_mask, num_actions, packed_seq_lens = pad_sequences(
-                    sequences, 
-                    attention_mask, 
-                    num_actions, 
-                    packed_seq_lens, 
-                    self.strategy.ring_attn_group
+                    sequences, attention_mask, num_actions, packed_seq_lens, self.strategy.ring_attn_group
                 )
 
         else:
@@ -552,12 +548,12 @@ class PPOTrainer(ABC):
             assert pad_len is not None
             sequences, attention_mask, num_actions, packed_seq_lens, _, values, _ = unpad_sequences(
                 pad_len=pad_len,
-                sequences=sequences, 
-                attention_mask=attention_mask, 
-                num_actions=num_actions, 
-                packed_seq_lens=packed_seq_lens, 
+                sequences=sequences,
+                attention_mask=attention_mask,
+                num_actions=num_actions,
+                packed_seq_lens=packed_seq_lens,
                 values=values,
-                ring_attn_group=self.strategy.ring_attn_group
+                ring_attn_group=self.strategy.ring_attn_group,
             )
 
         # loss function

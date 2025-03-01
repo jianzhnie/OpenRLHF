@@ -2,7 +2,6 @@ import os
 from abc import ABC
 
 import torch
-from flash_attn.utils.distributed import all_gather
 from torch.nn import functional as F
 from torch.optim import Optimizer
 from tqdm import tqdm
@@ -10,6 +9,10 @@ from tqdm import tqdm
 from openrlhf.models import DPOLoss
 from openrlhf.models.utils import log_probs_from_logits
 from openrlhf.utils.distributed_sampler import DistributedSampler
+from transformers.utils import is_flash_attn_2_available
+
+if is_flash_attn_2_available():
+    from flash_attn.utils.distributed import all_gather
 
 
 class DPOTrainer(ABC):
@@ -157,9 +160,10 @@ class DPOTrainer(ABC):
                         )
                 else:
                     packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens = data
-                    packed_input_ids, packed_attention_masks = packed_input_ids.to(
-                        torch.cuda.current_device()
-                    ), packed_attention_masks.to(torch.cuda.current_device())
+                    packed_input_ids, packed_attention_masks = (
+                        packed_input_ids.to(torch.cuda.current_device()),
+                        packed_attention_masks.to(torch.cuda.current_device()),
+                    )
                     chosen_logps, rejected_logps, aux_loss, nll_loss = self.packed_samples_forward(
                         self.model, packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens
                     )
@@ -279,9 +283,10 @@ class DPOTrainer(ABC):
                         )
                 else:
                     packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens = data
-                    packed_input_ids, packed_attention_masks = packed_input_ids.to(
-                        torch.cuda.current_device()
-                    ), packed_attention_masks.to(torch.cuda.current_device())
+                    packed_input_ids, packed_attention_masks = (
+                        packed_input_ids.to(torch.cuda.current_device()),
+                        packed_attention_masks.to(torch.cuda.current_device()),
+                    )
                     chosen_logps, rejected_logps, aux_loss, _ = self.packed_samples_forward(
                         self.model, packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens
                     )
