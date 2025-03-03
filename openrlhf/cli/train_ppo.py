@@ -13,10 +13,11 @@ from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
 
 
 SYSTEM_PROMPT = (
-    'A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant '
-    'first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning '
-    'process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., '
-    '<think> reasoning process here </think><answer> answer here </answer>')
+    "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
+    "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
+    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
+    "<think> reasoning process here </think><answer> answer here </answer>"
+)
 
 
 def train(args):
@@ -60,7 +61,7 @@ def train(args):
     else:
         critic = None
 
-    if not args.reward_funcs:
+    if not args.remote_rm_url and not args.reward_func_names and args.reward_pretrain:
         reward_model = get_llm_for_sequence_regression(
             args.reward_pretrain,
             "reward",
@@ -139,15 +140,17 @@ def train(args):
     #     train_split=args.prompt_split,
     # )
 
-    prompts_data = load_dataset(args.prompt_data,
-                        name=args.dataset_config, split="train")
-    prompts_data = prompts_data.remove_columns('messages')
+    prompts_data = load_dataset(args.prompt_data, name=args.dataset_config, split="train")
+    prompts_data = prompts_data.remove_columns(
+        [col for col in prompts_data.column_names if col not in [args.input_key, args.label_key]]
+    )
 
     args.system_prompt = SYSTEM_PROMPT
 
-
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    prompts_dataset = PromptDataset(prompts_data, tokenizer, strategy, sys_template=args.system_prompt,input_template=args.input_template)
+    prompts_dataset = PromptDataset(
+        prompts_data, tokenizer, strategy, sys_template=args.system_prompt, input_template=args.input_template
+    )
 
     if args.pretrain_data:
         pretrain_data = blending_datasets(
@@ -278,7 +281,8 @@ def train(args):
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
         # remote reward model
-        reward_funcs=args.reward_funcs,
+        remote_rm_url=args.remote_rm_url,
+        reward_func_names=args.reward_func_names,
         save_hf_ckpt=args.save_hf_ckpt,
         disable_ds_ckpt=args.disable_ds_ckpt,
     )
@@ -385,6 +389,31 @@ if __name__ == "__main__":
 
     parser.add_argument("--use_kl_loss", action="store_true", default=False, help="whether to use KL loss from GRPO")
 
+    # reward functions
+    parser.add_argument('--reward_func_names', nargs='+', type=str,
+                       default=['accuracy', 'format', 'reasoning_steps', 'cosine'],
+                       help="List of reward functions. Possible values: 'accuracy', 'format', 'reasoning_steps', 'cosine', 'repetition_penalty'")
+    parser.add_argument('--reward_weights', nargs='+', type=list,
+                        default=None,
+                        help="List of reward functions weights.")
+    # cosine scaling parameters
+    parser.add_argument('--cosine_min_value_wrong', type=float, default=0.0,
+                       help='Minimum reward for wrong answers')
+    parser.add_argument('--cosine_max_value_wrong', type=float, default=-0.5,
+                       help='Maximum reward for wrong answers')
+    parser.add_argument('--cosine_min_value_correct', type=float, default=0.5,
+                       help='Minimum reward for correct answers')
+    parser.add_argument('--cosine_max_value_correct', type=float, default=1.0,
+                       help='Maximum reward for correct answers')
+    parser.add_argument('--cosine_max_len', type=int, default=1000,
+                       help='Maximum length for scaling')
+    
+    # repetition penalty parameters
+    parser.add_argument('--repetition_n_grams', type=int, default=3,
+                       help='Number of n-grams for repetition penalty reward')
+    parser.add_argument('--repetition_max_penalty', type=float, default=-1.0,
+                       help='Maximum (negative) penalty for repetition penalty reward')
+
     # LoRA
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
     parser.add_argument("--lora_rank", type=int, default=0)
@@ -396,7 +425,7 @@ if __name__ == "__main__":
     parser.add_argument("--pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--reward_pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--remote_rm_url", type=str, default=None, help="remote RM API")
-    parser.add_argument('--use_rule_based_reward', type=bool, default=False, help="use the relu based reward or not")
+    parser.add_argument("--use_rule_based_reward", type=bool, default=False, help="use the relu based reward or not")
     parser.add_argument("--critic_pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--value_head_prefix", type=str, default="score")
 
@@ -408,8 +437,12 @@ if __name__ == "__main__":
         default="1.0",
         help="sampling probs for datasets",
     )
-    parser.add_argument("--dataset_config", type=str, default=None, help= "Dataset configuration name. Corresponds to the `name` argument of the `datasets.load_dataset` "
-            "function.")
+    parser.add_argument(
+        "--dataset_config",
+        type=str,
+        default=None,
+        help="Dataset configuration name. Corresponds to the `name` argument of the `datasets.load_dataset` function.",
+    )
     parser.add_argument("--prompt_split", type=str, default="train")
     parser.add_argument("--pretrain_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(
