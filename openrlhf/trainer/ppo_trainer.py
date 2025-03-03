@@ -135,9 +135,10 @@ class PPOTrainer(ABC):
             reward_func_names = [reward_func_names]
 
         self.reward_func_names = reward_func_names
-        reward_funcs = self.reward_func_names
+        reward_funcs = self.reward_func_names.copy()
+
         if self.reward_func_names:
-            for i, reward_func_name in enumerate(reward_func_names):
+            for i, reward_func_name in enumerate(self.reward_func_names):
                 if reward_func_name in relu_based_reward_func_mapping:
                     reward_func_class = relu_based_reward_func_mapping[reward_func_name]
                     reward_func_args = list(inspect.signature(reward_func_class.__init__).parameters)
@@ -157,14 +158,14 @@ class PPOTrainer(ABC):
             raise ValueError("You must specify reward_funcs or reward_model")
 
         if self.args.reward_weights is not None:
-            if len(self.args.reward_weights) != len(reward_funcs):
+            if len(self.args.reward_weights) != len(self.reward_funcs):
                 raise ValueError(
                     f"Number of reward weights ({len(self.args.reward_weights)}) must match number of reward "
-                    f"functions ({len(reward_funcs)})"
+                    f"functions ({len(self.reward_funcs)})"
                 )
             self.reward_weights = torch.tensor(self.args.reward_weights, dtype=torch.float32)
         else:
-            self.reward_weights = torch.ones(len(reward_funcs), dtype=torch.float32)
+            self.reward_weights = torch.ones(len(self.reward_funcs), dtype=torch.float32)
 
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8

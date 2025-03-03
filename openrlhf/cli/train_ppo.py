@@ -3,7 +3,6 @@ import itertools
 import math
 import os
 from datetime import datetime
-from sys import argv
 import torch
 from transformers.trainer import get_scheduler
 from datasets import load_dataset
@@ -71,7 +70,7 @@ def train(args):
             bf16=args.bf16,
             load_in_4bit=args.load_in_4bit,
             ds_config=strategy.get_ds_train_config(is_actor=False),
-            value_head_prefix=argv.value_head_prefix,
+            value_head_prefix=args.value_head_prefix,
         )
     else:
         reward_model = None

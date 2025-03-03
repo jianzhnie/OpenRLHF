@@ -123,7 +123,6 @@ class Samples:
     total_length: torch.Tensor
     prompts: list[str]
     labels: list[str]
-    pad_len: Optional[int]
 
 
 class NaiveExperienceMaker(ABC):
@@ -204,7 +203,22 @@ class NaiveExperienceMaker(ABC):
         After that, we will calculate the advantages and returns for each experience.
         """
         args = self.strategy.args
-        samples_list = self.generate_samples(bath_inputs, **generate_kwargs)
+        # generate responses
+        if self.strategy.ring_attn_group is not None:
+            # Only rank 0 in the ring attention group executes the generation function, and then broadcasts it to all other ranks.
+            if self.strategy.ring_attn_rank == 0:
+                samples_list = self.generate_samples(bath_inputs, **generate_kwargs)
+                dist.broadcast_object_list(samples_list, src=dist.get_rank(), group=self.strategy.ring_attn_group)
+            else:
+                world_size = torch.distributed.get_world_size() // args.ring_attn_size
+                samples_list = [None] * (
+                    args.rollout_batch_size * args.n_samples_per_prompt // world_size // args.micro_rollout_batch_size
+                )
+                dist.broadcast_object_list(
+                    samples_list, src=self.strategy.ring_attn_ranks[0], group=self.strategy.ring_attn_group
+                )
+        else:
+            samples_list = self.generate_samples(bath_inputs, **generate_kwargs)
         torch.distributed.barrier()
 
         experiences = []
@@ -292,7 +306,6 @@ class NaiveExperienceMaker(ABC):
                 total_length=attention_mask.float().sum(dim=-1),
                 prompts=prompts,
                 labels=labels,
-                pad_len=None,
             )
             samples_list.append(samples)
         return samples_list
@@ -368,8 +381,11 @@ class NaiveExperienceMaker(ABC):
             "response_length": samples.response_length,
             "total_length": samples.total_length,
             "num_actions": num_actions,
-            "reward_func_metrics": reward_func_metrics if self.reward_funcs else None,
         }
+
+        if self.reward_funcs:
+            info.update(reward_func_metrics)
+
         # reset model state
         self.actor.train()
         if self.critic is not None:
@@ -404,21 +420,19 @@ class NaiveExperienceMaker(ABC):
 
         # 初始化每个奖励函数的指标字典
         reward_func_metrics = {}
-        for i, func_name in enumerate(self.reward_func_names):
-            reward_func_metrics[func_name] = []
-
         # 为每个生成的序列计算每个奖励函数的值
         rewards_per_func = torch.zeros(len(completions), len(self.reward_funcs))
-        for i, reward_func in enumerate(self.reward_funcs):
+        for i, (func_name, reward_func) in enumerate(zip(self.reward_func_names, self.reward_funcs)):
             output_reward_func = reward_func(completions=completions, solution=solutions)
-            rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32)
-
-        # 记录每个奖励函数的指标
-        for i, func_name in enumerate(self.reward_func_names):
-            reward_func_metrics[func_name].append(rewards_per_func[:, i])
+            reward_tensor = torch.tensor(output_reward_func, dtype=torch.float32)
+            rewards_per_func[:, i] = reward_tensor
+            reward_func_metrics[func_name] = reward_tensor
 
         # 应用权重并求和得到最终奖励值
-        rewards = (rewards_per_func * self.reward_weights).unsqueeze(0).sum(dim=1)
+        rewards = (rewards_per_func * self.reward_weights).sum(dim=1)
+
+        # 添加总奖励到指标中
+        reward_func_metrics['total_reward'] = rewards
 
         return rewards, reward_func_metrics
 
@@ -933,7 +947,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                         total_length=attention_mask.float().sum(dim=-1),
                         prompts=prompts,
                         labels=labels,
-                        pad_len=None,
                     )
                 )
             else:
@@ -985,7 +998,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                         total_length=total_length,
                         prompts=prompts,
                         labels=labels,
-                        pad_len=pad_len,
                     )
                 )
         return samples_list
