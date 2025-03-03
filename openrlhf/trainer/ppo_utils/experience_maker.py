@@ -6,14 +6,13 @@ from typing import List, Optional, Tuple, Union
 
 import ray
 import torch
-import torch.nn as nn
 import torch.distributed as dist
-import torch.nn.functional as F
+import torch.nn as nn
 from tqdm import tqdm
 
 from openrlhf.models.actor import Actor
-from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
 from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
+from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
 
@@ -165,6 +164,7 @@ class NaiveExperienceMaker(ABC):
 
         # custom reward func for reinforced finetuning
         self.custom_reward_func = None
+        remote_rm_url = [remote_rm_url] if isinstance(remote_rm_url, str) else remote_rm_url
         if remote_rm_url and remote_rm_url[0].endswith(".py"):
             print(f"Loading custom `reward_func(queries, prompts, labels)` from {remote_rm_url[0]}")
             import importlib.util
@@ -357,7 +357,7 @@ class NaiveExperienceMaker(ABC):
                 action_log_probs,
                 base_action_log_probs,
                 action_mask=action_mask,
-                use_kl_estimator_k3=self.strategy.args.use_kl_estimator_k3,
+                kl_estimator=self.strategy.args.kl_estimator,
             )
         else:
             kl = torch.zeros_like(action_log_probs, dtype=action_log_probs.dtype, device=action_log_probs.device)
@@ -634,19 +634,22 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         When not using vllm, we will fallback to the default implementation,
         in which actor will be used to generate samples.
         """
+        from openrlhf.trainer.ray.vllm_engine import batch_vllm_engine_call
+
+        # vLLM wakeup when vllm_enable_sleep
+        if self.strategy.args.vllm_enable_sleep:
+            batch_vllm_engine_call(self.vllm_engines, "wake_up")
+
         if self.vllm_engines is None:
             return super().generate_samples(all_prompts, all_labels, **generate_kwargs)
 
         # vLLM generation
         samples = self._generate_vllm(all_prompts, all_labels, **generate_kwargs)
 
-        # vLLM offload when colocate_all_models
+        # vLLM offload when vllm_enable_sleep
         if self.strategy.args.vllm_enable_sleep:
-            if torch.distributed.get_rank() == 0:
-                refs = []
-                for engine in self.vllm_engines:
-                    refs.append(engine.sleep.remote())
-                ray.get(refs)
+            batch_vllm_engine_call(self.vllm_engines, "sleep")
+
         return samples
 
     @torch.no_grad()
@@ -766,7 +769,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 action_log_probs,
                 base_action_log_probs,
                 action_mask=action_mask,
-                use_kl_estimator_k3=args.use_kl_estimator_k3,
+                kl_estimator=self.strategy.args.kl_estimator,
             )
         else:
             kl = torch.zeros_like(action_log_probs, dtype=action_log_probs.dtype, device=device)
