@@ -220,6 +220,7 @@ class NaiveExperienceMaker(ABC):
         else:
             samples_list = self.generate_samples(bath_inputs, **generate_kwargs)
         torch.distributed.barrier()
+        torch.cuda.synchronize()
 
         experiences = []
         for samples in tqdm(
