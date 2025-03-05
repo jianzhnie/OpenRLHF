@@ -414,6 +414,9 @@ if __name__ == "__main__":
     parser.add_argument('--repetition_max_penalty', type=float, default=-1.0,
                        help='Maximum (negative) penalty for repetition penalty reward')
 
+    # packing samples using Flash Attention2
+    parser.add_argument("--packing_samples", action="store_true", default=False)
+    
     # LoRA
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
     parser.add_argument("--lora_rank", type=int, default=0)
