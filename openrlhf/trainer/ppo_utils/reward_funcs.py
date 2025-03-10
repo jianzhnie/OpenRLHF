@@ -1,13 +1,14 @@
 import json
 import math
 import re
-from typing import Dict, List, Sequence, Set, Tuple, Union
+from typing import List, Sequence, Set, Tuple, Union
 
 from latex2sympy2_extended import NormalizationConfig
 from math_verify.grader import verify
 from math_verify.parser import (ExprExtractionConfig, LatexExtractionConfig,
                                 parse)
 from openrlhf.utils.logging_utils import init_logger
+from transformers import PreTrainedTokenizer
 from transformers.utils.import_utils import _is_package_available
 
 logger = init_logger(__name__)
@@ -98,18 +99,21 @@ class MathAccuracyReward(BaseRewardFunction):
         Args:
             expression (str): The input mathematical expression in LaTeX.
             extraction_config (Sequence[ExtractionTarget]): Extraction configuration.
+
         Returns:
             Parsed expression object or None if parsing fails.
         """
         if not expression.strip():
-            return None  # Avoid parsing empty strings
+            return None  # 避免解析空字符串
 
-        result = parse(expression,
-                       extraction_mode='first_match',
-                       extraction_config=extraction_config)
-        if len(result) > 0:
-            return result
-        else:
+        try:
+            result = parse(expression,
+                           extraction_mode='first_match',
+                           extraction_config=extraction_config)
+            return result or None  # 直接返回结果或 None
+        except Exception as e:
+            logger.info(
+                f'Parsing failed for expression: {expression}, Error: {e}')
             return None
 
     def __call__(self, completions: List[str], solution: List[str],
@@ -132,7 +136,7 @@ class MathAccuracyReward(BaseRewardFunction):
             gold_parsed = self.parse_expression(
                 sol, extraction_config=self.gold_extraction_config)
 
-            if gold_parsed is None:
+            if not gold_parsed:
                 # Assign neutral reward if the ground truth cannot be parsed
                 logger.info(f'Warning: Failed to parse gold solution: {sol}')
                 rewards.append(0.5)
@@ -141,7 +145,7 @@ class MathAccuracyReward(BaseRewardFunction):
             answer_parsed = self.parse_expression(
                 content, extraction_config=self.answer_extraction_config)
 
-            if answer_parsed is None:
+            if not answer_parsed:
                 logger.info(
                     f'Warning: Failed to parse model answer: {content}')
                 rewards.append(0.0)  # Invalid model response
@@ -203,18 +207,21 @@ class MathAccuracyRewardV2(BaseRewardFunction):
         Args:
             expression (str): The input mathematical expression in LaTeX.
             extraction_config (Sequence[ExtractionTarget]): Extraction configuration.
+
         Returns:
             Parsed expression object or None if parsing fails.
         """
         if not expression.strip():
-            return None  # Avoid parsing empty strings
+            return None  # 避免解析空字符串
 
-        result = parse(expression,
-                       extraction_mode='first_match',
-                       extraction_config=extraction_config)
-        if len(result) > 0:
-            return result
-        else:
+        try:
+            result = parse(expression,
+                           extraction_mode='first_match',
+                           extraction_config=extraction_config)
+            return result or None  # 直接返回结果或 None
+        except Exception as e:
+            logger.info(
+                f'Parsing failed for expression: {expression}, Error: {e}')
             return None
 
     def __call__(self, completions: List[str], solution: List[str],
@@ -233,7 +240,7 @@ class MathAccuracyRewardV2(BaseRewardFunction):
             gold_parsed = self.parse_expression(
                 sol, extraction_config=self.gold_extraction_config)
 
-            if gold_parsed is None:
+            if not gold_parsed:
                 # Assign neutral reward if the ground truth cannot be parsed
                 logger.warning(f'Failed to parse ground truth solution: {sol}')
                 rewards.append(0.5)
@@ -242,7 +249,7 @@ class MathAccuracyRewardV2(BaseRewardFunction):
             answer_parsed = self.parse_expression(
                 content, extraction_config=self.answer_extraction_config)
 
-            if answer_parsed is None:
+            if not answer_parsed:
                 # Penalize unparseable model outputs
                 logger.info(
                     f'Warning: Failed to parse model answer: {content}')
@@ -450,99 +457,67 @@ class ReasoningStepReward(BaseRewardFunction):
 
 
 class LengthReward(BaseRewardFunction):
-    """Computes length-based rewards to discourage overthinking and promote
-    token efficiency.
+    """Computes length-based rewards to discourage overthinking and encourage
+    concise responses.
 
-    Reference: Kimi 1.5 tech report (https://arxiv.org/abs/2501.12599)
+    **Reference:** Kimi 1.5 tech report (https://arxiv.org/abs/2501.12599)
 
-    This function balances correctness and response length, rewarding concise correct answers.
+    **Reward Calculation:**
+        - Correct answers: `reward = 0.5 - (length - min_length) / (max_length - min_length)`
+        - Incorrect answers: `reward = min(0, 0.5 - (length - min_length) / (max_length - min_length))`
 
-    Reward Calculation:
-    - Correct answers: `reward = 0.5 - (length - min_length) / (max_length - min_length)`
-    - Incorrect answers: `reward = min(0, 0.5 - (length - min_length) / (max_length - min_length))`
-
-    Args:
-        completions (List[Dict[str, str]]): List of model-generated completions.
-        solution (List[str]): List of ground truth solutions.
-
-    Returns:
-        List[float]: List of computed rewards for each completion.
+    **Args:**
+        tokenizer (PreTrainedTokenizer): Tokenizer for measuring response length.
+        accuracy_orm (Union[BaseRewardFunction, None], optional): Function for computing accuracy.
     """
 
-    def check_correctness(self, completions: List[Dict[str, str]],
-                          solutions: List[str]) -> List[bool]:
-        """Checks the correctness of each completion by comparing it to the
-        ground truth solution.
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizer,
+        accuracy_orm: Union[BaseRewardFunction, None] = None,
+    ) -> None:
+        """Initializes the LengthReward function.
 
         Args:
-            completions (List[Dict[str, str]]): Generated completions.
-            solutions (List[str]): Ground truth solutions.
-
-        Returns:
-            List[bool]: A list indicating whether each completion is correct.
+            tokenizer (PreTrainedTokenizer): Tokenizer for measuring response length.
+            accuracy_orm (Union[BaseRewardFunction, None], optional): Accuracy computation module.
         """
-        correctness = []
-        for content, sol in zip(completions, solutions):
-            gold_parsed = parse(
-                sol,
-                extraction_mode='first_match',
-                extraction_config=[LatexExtractionConfig()],
-            )
+        self.tokenizer = tokenizer
+        self.accuracy_orm = accuracy_orm or MathAccuracyReward()
 
-            if not gold_parsed:
-                # Treat as correct to avoid penalization when parsing fails
-                correctness.append(True)
-                logger.info(f'Failed to parse gold solution: {sol}')
-                continue
-
-            answer_parsed = parse(
-                content,
-                extraction_config=[
-                    LatexExtractionConfig(
-                        normalization_config=NormalizationConfig(
-                            nits=False,
-                            malformed_operators=False,
-                            basic_latex=True,
-                            equations=True,
-                            boxed=True,
-                            units=True,
-                        ),
-                        boxed_match_priority=0,
-                        try_extract_without_anchor=False,
-                    )
-                ],
-                extraction_mode='first_match',
-            )
-
-            correctness.append(verify(answer_parsed, gold_parsed))
-
-        return correctness
-
-    def __call__(self, completions: List[Dict[str, str]], solution: List[str],
+    def __call__(self, completions: List[str], solution: List[str],
                  **kwargs) -> List[float]:
         """Computes length-based rewards for each completion.
 
         Args:
-            completions (List[Dict[str, str]]): List of model-generated completions.
+            completions (List[str]): List of model-generated completions.
             solution (List[str]): List of ground truth solutions.
+            **kwargs: Additional parameters for accuracy computation.
 
         Returns:
-            List[float]: List of computed rewards.
+            List[float]: Computed rewards for each completion.
         """
-        correctness = self.check_correctness(completions, solution)
+        # Compute correctness scores using accuracy function
+        correctness_scores = self.accuracy_orm(completions, solution, **kwargs)
 
-        # Calculate response lengths
-        lengths = [len(content) for content in completions]
+        # Calculate response lengths using tokenizer
+        lengths = [
+            len(self.tokenizer.encode(content, add_special_tokens=False))
+            for content in completions
+        ]
+
+        # Determine min and max lengths for scaling
         min_len, max_len = min(lengths), max(lengths)
 
-        # If all responses are of equal length, return zero rewards
-        if max_len == min_len:
+        # If all responses have the same length, return zero rewards
+        if min_len == max_len:
             return [0.0] * len(completions)
 
+        # Compute rewards
         rewards = []
-        for length, is_correct in zip(lengths, correctness):
+        for length, correctness in zip(lengths, correctness_scores):
             lambda_val = 0.5 - (length - min_len) / (max_len - min_len)
-            reward = lambda_val if is_correct else min(0, lambda_val)
+            reward = lambda_val if correctness >= 0.5 else min(0, lambda_val)
             rewards.append(float(reward))
 
         return rewards
@@ -576,13 +551,16 @@ class CosineScaledReward(BaseRewardFunction):
 
     def __init__(
         self,
+        tokenizer: PreTrainedTokenizer = None,
         cosine_min_value_wrong: float = -0.5,
         cosine_max_value_wrong: float = 0.0,
         cosine_min_value_correct: float = 0.5,
         cosine_max_value_correct: float = 1.0,
         cosine_max_len: int = 1000,
         accuracy_orm: Union[BaseRewardFunction, None] = None,
-    ):
+    ) -> None:
+
+        self.tokenizer = tokenizer
         self.min_value_wrong = cosine_min_value_wrong
         self.max_value_wrong = cosine_max_value_wrong
         self.min_value_correct = cosine_min_value_correct
@@ -623,13 +601,13 @@ class CosineScaledReward(BaseRewardFunction):
         rewards = []
 
         for content, acc_reward in zip(completions, acc_rewards):
-            gen_text_len = len(
-                content.strip())  # Avoid counting excess whitespace
+            gen_len = len(
+                self.tokenizer.encode(content, add_special_tokens=False))
 
-            if gen_text_len == 0:
+            if gen_len == 0:
                 logger.warning(f'Skipping empty completion: {content}')
-                rewards.append(self.min_value_wrong
-                               )  # Assign minimum penalty for empty responses
+                rewards.append(self.min_value_wrong)
+                # Assign minimum penalty for empty responses
                 continue
 
             is_correct = acc_reward >= 1.0
@@ -641,7 +619,7 @@ class CosineScaledReward(BaseRewardFunction):
                 min_value, max_value = self.max_value_wrong, self.min_value_wrong  # Fixed logic
 
             # Compute scaled reward
-            reward = self.cosine_scaled_reward(gen_text_len, self.max_len,
+            reward = self.cosine_scaled_reward(gen_len, self.max_len,
                                                min_value, max_value)
             rewards.append(reward)
 
@@ -832,75 +810,6 @@ relu_based_reward_func_mapping = {
 }
 
 
-def cosine_scaled_reward(t: int, T: int, min_value: float,
-                         max_value: float) -> float:
-    """Computes a cosine-scaled reward value based on length.
-
-    :param t: Current length of the response.
-    :param T: Maximum length considered.
-    :param min_value: Minimum reward value.
-    :param max_value: Maximum reward value.
-    :return: Scaled reward value.
-    """
-    cosine_value = math.cos(t * math.pi / T)
-    return min_value + 0.5 * (max_value - min_value) * (1.0 + cosine_value)
-
-
-def test_cosine_scaled_reward_behavior() -> None:
-    """Tests the cosine_scaled_reward function for correct and incorrect
-    answers with varying lengths, ensuring expected reward behavior."""
-    # Test cases: correct answers (varying lengths)
-    correct_answers = [
-        '答案是42',  # Length: 5
-        '经过仔细计算，答案是42',  # Length: 12
-        '让我详细解释一下，经过认真思考和计算，最终答案是42'  # Length: 25
-    ]
-
-    # Test cases: incorrect answers (varying lengths)
-    wrong_answers = [
-        '答案是24',  # Length: 5
-        '经过仔细计算，答案是24',  # Length: 12
-        '让我详细解释一下，经过认真思考和计算，最终答案是24'  # Length: 25
-    ]
-
-    # Ground truth correctness (1 = correct, 0 = incorrect)
-    accuracy_rewards: List[int] = [1, 1, 1, 0, 0, 0]
-    all_contents = correct_answers + wrong_answers
-
-    # Reward scaling parameters
-    min_value_wrong, max_value_wrong = -1.0, -0.5
-    min_value_correct, max_value_correct = 0.5, 1.0
-    max_len = 20
-
-    # Compute cosine-scaled rewards
-    cosine_rewards = []
-    for content, acc_reward in zip(all_contents, accuracy_rewards):
-        gen_len = len(content)
-        is_correct = acc_reward >= 1.0
-
-        if is_correct:
-            min_value = min_value_correct
-            max_value = max_value_correct
-        else:
-            # Swap min/max for incorrect answers
-            min_value = max_value_wrong
-            max_value = min_value_wrong
-
-        reward = cosine_scaled_reward(gen_len, max_len, min_value, max_value)
-        cosine_rewards.append(reward)
-
-    for (content, reward) in zip(all_contents, cosine_rewards):
-        logger.info(f'content: {content}, reward: {reward}')
-
-    # Assertions to verify expected reward behavior
-    assert cosine_rewards[0] > cosine_rewards[1] > cosine_rewards[
-        2], 'Correct answers should receive decreasing rewards as length increases.'
-    assert cosine_rewards[3] < cosine_rewards[4] < cosine_rewards[
-        5], 'Incorrect answers should receive decreasing penalties as length increases.'
-
-    logger.info('All tests passed successfully!')
-
-
 def test_rewards_func_exam1() -> None:
     """Test the reward function with various math-related completion
     examples."""
@@ -989,6 +898,5 @@ def test_rewards_func_exam2() -> None:
 
 
 if __name__ == '__main__':
-    test_cosine_scaled_reward_behavior()
     test_rewards_func_exam1()
     test_rewards_func_exam2()
