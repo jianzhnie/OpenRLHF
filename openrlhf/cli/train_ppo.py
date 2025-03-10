@@ -85,7 +85,8 @@ def train(args):
 
     # configure tokenizer
     tokenizer = get_tokenizer(args.pretrain, actor.model, "left", strategy, use_fast=not args.disable_fast_tokenizer)
-
+    args.tokenizer = tokenizer
+    
     # load weights for reference actor
     if args.init_kl_coef == 0:
         initial_model = None
@@ -394,15 +395,15 @@ if __name__ == "__main__":
     parser.add_argument('--reward_func_names', nargs='+', type=str,
                        default=['accuracy', 'format', 'reasoning_steps', 'cosine'],
                        help="List of reward functions. Possible values: 'accuracy', 'format', 'reasoning_steps', 'cosine', 'repetition_penalty'")
-    parser.add_argument('--reward_weights', nargs='+', type=list,
+    parser.add_argument('--reward_weights', nargs='+', type=float,
                         default=None,
                         help="List of reward functions weights.")
     # cosine scaling parameters
-    parser.add_argument('--cosine_min_value_wrong', type=float, default=0.0,
+    parser.add_argument('--cosine_min_value_wrong', type=float, default=-0.5,
                        help='Minimum reward for wrong answers')
-    parser.add_argument('--cosine_max_value_wrong', type=float, default=-0.5,
+    parser.add_argument('--cosine_max_value_wrong', type=float, default=-0.1,
                        help='Maximum reward for wrong answers')
-    parser.add_argument('--cosine_min_value_correct', type=float, default=0.5,
+    parser.add_argument('--cosine_min_value_correct', type=float, default=0.6,
                        help='Minimum reward for correct answers')
     parser.add_argument('--cosine_max_value_correct', type=float, default=1.0,
                        help='Maximum reward for correct answers')
