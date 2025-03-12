@@ -228,6 +228,12 @@ class NaiveExperienceMaker(ABC):
                 )
         else:
             samples_list = self.generate_samples(bath_inputs, **generate_kwargs)
+
+        # vLLM offload when vllm_enable_sleep
+        if self.strategy.args.vllm_enable_sleep:
+            batch_vllm_engine_call(self.vllm_engines, "sleep")
+
+        torch.cuda.empty_cache()
         torch.distributed.barrier()
         torch.cuda.synchronize()
 
