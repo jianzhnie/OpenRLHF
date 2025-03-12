@@ -27,7 +27,7 @@ def get_all_env_variables():
 @ray.remote
 class LLMRayActor:
     def __init__(self, *args, bundle_indices: list = None, **kwargs):
-        noset_visible_devices = kwargs.pop("noset_visible_devices")
+        # noset_visible_devices = kwargs.pop("noset_visible_devices")
         if kwargs.get("distributed_executor_backend") == "ray":
             # a hack to make the script work.
             # stop ray from manipulating CUDA_VISIBLE_DEVICES
@@ -35,15 +35,15 @@ class LLMRayActor:
             os.environ.pop("CUDA_VISIBLE_DEVICES", None)
             os.environ.pop("ASCEND_RT_VISIBLE_DEVICES", None)
 
-        elif noset_visible_devices:
-            # We need to set CUDA_VISIBLE_DEVICES to the ray assigned GPU
-            # when the distributed_executor_backend is not ray and
-            # RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES is set.
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(ray.get_gpu_ids()[0])
+        # elif noset_visible_devices:
+        #     # We need to set CUDA_VISIBLE_DEVICES to the ray assigned GPU
+        #     # when the distributed_executor_backend is not ray and
+        #     # RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES is set.
+        #     os.environ["CUDA_VISIBLE_DEVICES"] = str(ray.get_gpu_ids()[0])
 
-        num_gpus = kwargs.pop("num_gpus")
+        # num_gpus = kwargs.pop("num_gpus")
         if bundle_indices is not None:
-            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = str(num_gpus)
+            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = 0.2
             os.environ["VLLM_RAY_BUNDLE_INDICES"] = ",".join(map(str, bundle_indices))
             print(f"creating LLM with bundle_indices={bundle_indices}")
 
@@ -140,7 +140,7 @@ def create_vllm_engines(
 
     if not use_hybrid_engine:
         # Create a big placement group to ensure that all engines are packed
-        bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_engines * tensor_parallel_size)]
+        bundles = [{ACCELERATOR_TYPE: 1, "CPU": 1} for _ in range(num_engines * tensor_parallel_size)]
         shared_pg = placement_group(bundles, strategy="PACK")
         ray.get(shared_pg.ready())
 
