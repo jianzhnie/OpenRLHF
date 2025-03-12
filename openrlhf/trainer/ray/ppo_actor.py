@@ -290,7 +290,6 @@ class ActorPPOTrainer(PPOTrainer):
     def offload_states(self):
         offload_deepspeed_states(self.actor.model)
 
-
 @ray.remote
 class ActorModelRayActor(BasePPORole):
     def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):

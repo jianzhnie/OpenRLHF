@@ -127,9 +127,7 @@ def train(args):
             and args.critic_num_gpus_per_node == args.reward_num_gpus_per_node
         ), f"num_nodes and num_gpus_per_node must be the same when colocate critic and reward model."
 
-        bundles = [
-            {ACCELERATOR_TYPE: 1, "CPU": 1} for _ in range(args.critic_num_nodes * args.critic_num_gpus_per_node)
-        ]
+        bundles = [{ACCELERATOR_TYPE: 1, "CPU": 1} for _ in range(args.critic_num_nodes * args.critic_num_gpus_per_node)]
         pg = placement_group(bundles, strategy="PACK")
         ray.get(pg.ready())
 

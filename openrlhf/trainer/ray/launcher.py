@@ -232,9 +232,7 @@ class PPORayActorGroup:
                     worker_actor = self.ray_actor_type.options(
                         num_cpus=num_gpus_per_actor,
                         num_gpus=num_gpus_per_actor if ACCELERATOR_TYPE == "GPU" else 0,
-                        resources=self._resources
-                        if ACCELERATOR_TYPE == "GPU"
-                        else {ACCELERATOR_TYPE: num_gpus_per_actor},
+                        resources=self._resources if ACCELERATOR_TYPE == "GPU" else {ACCELERATOR_TYPE: num_gpus_per_actor},
                         scheduling_strategy=PlacementGroupSchedulingStrategy(
                             placement_group=pg,
                             placement_group_bundle_index=rank,
@@ -244,9 +242,7 @@ class PPORayActorGroup:
                     worker_actor = self.ray_actor_type.options(
                         num_cpus=num_gpus_per_actor,
                         num_gpus=num_gpus_per_actor if ACCELERATOR_TYPE == "GPU" else 0,
-                        resources=self._resources
-                        if ACCELERATOR_TYPE == "GPU"
-                        else {ACCELERATOR_TYPE: num_gpus_per_actor},
+                        resources=self._resources if ACCELERATOR_TYPE == "GPU" else {ACCELERATOR_TYPE: num_gpus_per_actor},
                     ).remote(world_size, rank, master_addr, master_port)
                 self._actor_handlers.append(worker_actor)
 

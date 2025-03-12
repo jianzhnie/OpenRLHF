@@ -11,6 +11,7 @@ from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
 from openrlhf import IS_NPU_AVAILABLE
 
+from openrlhf import IS_NPU_AVAILABLE
 from .ring_attn_utils import convert_ring_attn_params
 from .utils import log_probs_from_logits, reset_position_ids
 
