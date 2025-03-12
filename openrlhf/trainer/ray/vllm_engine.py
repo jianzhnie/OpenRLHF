@@ -3,11 +3,11 @@ import queue
 from collections import defaultdict
 from typing import Any, List
 
-from lark import v_args
 import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from vllm import LLM
+import numpy as np
 
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf import ACCELERATOR_TYPE
@@ -41,7 +41,7 @@ class LLMRayActor:
             # RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES is set.
             os.environ["CUDA_VISIBLE_DEVICES"] = str(ray.get_gpu_ids()[0])
 
-        num_gpus = v_args.pop("num_gpus")
+        num_gpus = kwargs.pop("num_gpus")
         if bundle_indices is not None:
             os.environ["VLLM_RAY_PER_WORKER_GPUS"] = str(num_gpus)
             os.environ["VLLM_RAY_BUNDLE_INDICES"] = ",".join(map(str, bundle_indices))
