@@ -60,9 +60,11 @@ def train(args):
     # if colocated, create placement group for actor and ref model explicitly.
     pg = None
     if args.colocate_actor_ref or args.colocate_all_models:
-        assert (
-            args.actor_num_nodes == args.ref_num_nodes and args.actor_num_gpus_per_node == args.ref_num_gpus_per_node
-        ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
+        if args.init_kl_coef > 0:
+            assert (
+                args.actor_num_nodes == args.ref_num_nodes
+                and args.actor_num_gpus_per_node == args.ref_num_gpus_per_node
+            ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
 
         bundles = [{ACCELERATOR_TYPE: 1, "CPU": 1} for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)]
         pg = placement_group(bundles, strategy="PACK")
@@ -265,6 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for deepspeed")
     parser.add_argument("--zero_stage", type=int, default=2, help="DeepSpeed ZeRO stage")
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
+    parser.add_argument("--torch_compile", action="store_true", default=False)
     parser.add_argument("--bf16", action="store_true", default=False, help="Enable bfloat16")
     ## Make EMA as an optional feature
     parser.add_argument("--enable_ema", action="store_true", help="Enable EMA checkpoint for the model.")
@@ -272,6 +275,7 @@ if __name__ == "__main__":
     parser.add_argument("--adam_offload", action="store_true", default=False, help="Offload Adam Optimizer")
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
     parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
+    parser.add_argument("--use_liger_kernel", action="store_true", default=False, help="Enable Liger Kernel")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)

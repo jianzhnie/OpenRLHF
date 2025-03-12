@@ -10,8 +10,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
-from openrlhf.models.utils import masked_mean, unpacking_samples, compute_approx_kl
-from openrlhf.models.ring_attn_utils import unpad_sequences, pad_sequences
+from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
+from openrlhf.models.utils import compute_approx_kl, masked_mean, unpacking_samples
 from openrlhf.utils.distributed_sampler import DistributedSampler
 from openrlhf.trainer.ppo_utils.reward_funcs import relu_based_reward_func_mapping
 
@@ -439,7 +439,7 @@ class PPOTrainer(ABC):
                     action_log_probs,
                     base_action_log_probs,
                     experience.action_mask,
-                    kl_estimator = self.args.kl_estimator,
+                    kl_estimator=self.args.kl_estimator,
                 )
             else:
                 kl = torch.zeros_like(action_log_probs, dtype=action_log_probs.dtype, device=action_log_probs.device)

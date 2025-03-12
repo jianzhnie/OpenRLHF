@@ -315,6 +315,8 @@ class ActorModelRayActor(BasePPORole):
             lora_dropout=strategy.args.lora_dropout,
             ds_config=strategy.get_ds_train_config(is_actor=True),
             packing_samples=strategy.args.packing_samples,
+            temperature=strategy.args.temperature,
+            use_liger_kernel=strategy.args.use_liger_kernel,
         )
         strategy.print(actor)
 
@@ -498,7 +500,7 @@ class ActorModelRayActor(BasePPORole):
             ema_beta=0.992,
             ptx_coef=args.ptx_coef,
             max_norm=args.max_norm,
-            # fro GPT generation
+            # for GPT generation
             do_sample=True,
             max_new_tokens=args.generate_max_len,
             max_length=args.max_len,
@@ -513,8 +515,19 @@ class ActorModelRayActor(BasePPORole):
         # broadcast checkpoint
         ckpt_path = os.path.join(args.ckpt_path, "_actor")
         if args.load_checkpoint and os.path.exists(ckpt_path) and not vllm_engines is None:
+            # vLLM wakeup when vllm_enable_sleep
+            if self.strategy.args.vllm_enable_sleep:
+                batch_vllm_engine_call(self.vllm_engines, "wake_up")
             torch.distributed.barrier()
+            torch.cuda.synchronize()
+
             trainer._broadcast_to_vllm()
+
+            # vLLM offload when vllm_enable_sleep
+            if self.strategy.args.vllm_enable_sleep:
+                batch_vllm_engine_call(self.vllm_engines, "sleep")
+                torch.distributed.barrier()
+                torch.cuda.synchronize()
 
         trainer.fit(
             args,
