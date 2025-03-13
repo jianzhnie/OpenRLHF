@@ -322,7 +322,6 @@ class NaiveExperienceMaker(ABC):
                 total_length=attention_mask.float().sum(dim=-1),
                 prompts=prompts,
                 labels=labels,
-                pad_len=None,
             )
             samples_list.append(samples)
         return samples_list
@@ -671,13 +670,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         # vLLM generation
         samples = self._generate_vllm(all_prompts, all_labels, **generate_kwargs)
 
-        # vLLM offload when colocate_all_models
-        if self.strategy.args.vllm_enable_sleep:
-            if torch.distributed.get_rank() == 0:
-                refs = []
-                for engine in self.vllm_engines:
-                    refs.append(engine.sleep.remote())
-                ray.get(refs)
         return samples
 
     @torch.no_grad()

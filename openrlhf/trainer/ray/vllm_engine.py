@@ -43,7 +43,7 @@ class LLMRayActor:
 
         # num_gpus = kwargs.pop("num_gpus")
         if bundle_indices is not None:
-            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = 0.2
+            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = "0.2"
             os.environ["VLLM_RAY_BUNDLE_INDICES"] = ",".join(map(str, bundle_indices))
             print(f"creating LLM with bundle_indices={bundle_indices}")
 
@@ -198,7 +198,7 @@ def create_vllm_engines(
                 trust_remote_code=True,
                 num_actors=num_actors,
                 gpu_memory_utilization=gpu_memory_utilization,
-                bundle_indices=bundle_indices,
+                bundle_indices=bundle_indices if shared_pg else None,
                 num_gpus=0.2 if use_hybrid_engine else 1,
                 enable_sleep_mode=vllm_enable_sleep,
                 noset_visible_devices=ray_noset_visible_devices(),
