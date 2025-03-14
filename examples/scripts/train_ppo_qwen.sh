@@ -13,9 +13,9 @@ openrlhf.cli.train_ppo \
    --logging_steps 1 \
    --eval_steps -1 \
    --micro_train_batch_size 2 \
-   --train_batch_size 128 \
+   --train_batch_size 16 \
    --micro_rollout_batch_size 4 \
-   --rollout_batch_size 1024 \
+   --rollout_batch_size 16 \
    --max_epochs 1 \
    --prompt_max_len 1024 \
    --generate_max_len 1024 \
@@ -23,7 +23,10 @@ openrlhf.cli.train_ppo \
    --bf16 \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
+   --value_clip 0.2 \
    --init_kl_coef 0.01 \
+   --kl_target 6 \
+   --kl_horizon 10000 \
    --prompt_data /home/robin/hf_hub/datasets/text_data/AI-MO/NuminaMath-TIR \
    --input_key problem \
    --label_key solution \
