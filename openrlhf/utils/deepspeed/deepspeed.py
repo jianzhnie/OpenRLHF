@@ -4,7 +4,8 @@ import shutil
 from abc import ABC
 from collections import defaultdict
 from datetime import timedelta
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Optional
+
 
 import deepspeed
 import numpy as np
@@ -20,6 +21,12 @@ from torch.utils.data import DataLoader
 from openrlhf.models import Actor
 from openrlhf.models.ring_attn_utils import get_ring_attn_group, set_ring_attn_group
 from openrlhf.utils.distributed_sampler import DistributedSampler
+from openrlhf.utils.optimizer_utils import GradientClipper
+from openrlhf.utils.logging_utils import init_logger
+
+
+logger = init_logger(__name__)
+
 
 from .deepspeed_utils import (
     _z3_params_to_fetch,
@@ -41,6 +48,9 @@ class DeepspeedStrategy(ABC):
         self,
         seed: int = 42,
         max_norm: float = 0.0,
+        max_grad_norm: float = 1.0,
+        max_grad_value: Optional[float] = None,
+        clip_type: str = "norm",  # 添加clip_type参数
         micro_train_batch_size=1,
         train_batch_size=1,
         zero_stage=2,
@@ -62,6 +72,11 @@ class DeepspeedStrategy(ABC):
         # overlap_comm
         self.overlap_comm = getattr(args, "overlap_comm", False)
         self.torch_compile = getattr(args, "torch_compile", False)
+
+        # 初始化梯度裁剪器
+        self.gradient_clipper = GradientClipper(
+            max_grad_norm=max_grad_norm, max_grad_value=max_grad_value, clip_type=clip_type
+        )
 
         self.is_rlhf = False
         self.time_steps = defaultdict(int)
@@ -132,6 +147,15 @@ class DeepspeedStrategy(ABC):
         if isinstance(model, Actor):
             model = model.model
         model.backward(loss)
+
+        # 在优化器步骤之前执行梯度裁剪
+        if self.gradient_clipper.max_grad_norm > 0 or self.gradient_clipper.max_grad_value is not None:
+            parameters = [p for p in model.parameters() if p.requires_grad]
+            total_norm = self.gradient_clipper(parameters)
+
+            # 记录梯度范数(可选)
+            if total_norm is not None and hasattr(self, "log_metrics"):
+                logger.info({"grad_norm": total_norm.item()})
 
     def optimizer_step(
         self,
