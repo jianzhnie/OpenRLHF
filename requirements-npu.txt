@@ -11,6 +11,7 @@ packaging
 peft
 ray[default]==2.42.0
 tensorboard
+torch==2.5.1
 torchmetrics
 tqdm
 transformers==4.48.3

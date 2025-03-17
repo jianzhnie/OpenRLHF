@@ -10,6 +10,7 @@ import torch
 import torch.distributed
 from transformers.trainer import get_scheduler
 
+from openrlhf import IS_NPU_AVAILABLE
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import PPOTrainer
@@ -289,6 +290,7 @@ class ActorPPOTrainer(PPOTrainer):
 
     def offload_states(self):
         offload_deepspeed_states(self.actor.model)
+
 
 @ray.remote
 class ActorModelRayActor(BasePPORole):

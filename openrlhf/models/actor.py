@@ -8,11 +8,14 @@ from peft.tuners.lora import LoraLayer
 from torch.nn import functional as F
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from transformers.integrations.deepspeed import HfDeepSpeedConfig
+from transformers.utils import is_flash_attn_2_available
 
 from openrlhf import IS_NPU_AVAILABLE
-
 from .ring_attn_utils import convert_ring_attn_params
 from .utils import log_probs_from_logits, reset_position_ids
+
+if is_flash_attn_2_available():
+    from flash_attn.utils.distributed import all_gather
 
 
 class Actor(nn.Module):

@@ -65,6 +65,15 @@ else:
 
 install_requires = _fetch_requirements(requirements_file)
 
+target_device = os.getenv("TARGET_DEVICE", "GPU").upper()
+
+if target_device == "NPU":
+    requirements_file = "requirements-npu.txt"
+else:
+    requirements_file = "requirements.txt"
+
+install_requires = _fetch_requirements(requirements_file)
+
 # Setup configuration
 setup(
     author="OpenRLHF Team",
