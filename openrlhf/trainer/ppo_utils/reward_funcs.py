@@ -65,13 +65,23 @@ class MathAccuracyReward(BaseRewardFunction):
         List[float]: Reward scores between 0.0 and 1.0.
     """
 
-    def __init__(self, gold_is_latex: bool = True) -> None:
+    def __init__(
+        self,
+        correct_reward: float = 1.0,
+        incorrect_reward: float = -1.0,
+        neutral_reward: float = 0.0,
+        gold_is_latex: bool = True,
+    ) -> None:
         """Initializes the MathAccuracyReward function with parsing
         configurations.
 
         Args:
             gold_is_latex (bool): Flag indicating whether the ground truth is provided in LaTeX format.
         """
+        self.correct_reward = correct_reward
+        self.incorrect_reward = incorrect_reward
+        self.neutral_reward = neutral_reward
+
         self.gold_extraction_config: List[LatexExtractionConfig] = [
             LatexExtractionConfig()
         ]
@@ -129,7 +139,8 @@ class MathAccuracyReward(BaseRewardFunction):
         """
         if len(completions) != len(solution):
             raise ValueError(
-                'Mismatch between the number of completions and solutions.')
+                f"Completions length ({len(completions)}) does not match solutions length ({len(solution)})"
+            )
 
         rewards: List[float] = []
         for content, sol in zip(completions, solution):
@@ -139,24 +150,24 @@ class MathAccuracyReward(BaseRewardFunction):
             if not gold_parsed:
                 # Assign neutral reward if the ground truth cannot be parsed
                 logger.info(f'Warning: Failed to parse gold solution: {sol}')
-                rewards.append(0.5)
+                rewards.append(self.correct_reward)
                 continue
 
             answer_parsed = self.parse_expression(
                 content, extraction_config=self.answer_extraction_config)
 
             if not answer_parsed:
-                rewards.append(0.0)  # Invalid model response
+                rewards.append(self.incorrect_reward)  # Invalid model response
                 continue
 
             try:
                 # If the verification function succeeds, return the verification score (1.0 or 0.0)
-                reward = float(verify(answer_parsed, gold_parsed))
+                is_correct = verify(answer_parsed, gold_parsed)
+
+                reward = self.correct_reward if is_correct else self.incorrect_reward
             except Exception as e:
-                logger.warning(
-                    f'Verification failed: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}'
-                )
-                reward = 0.0
+                logger.warning(f"Verification failed: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}")
+                reward = self.incorrect_reward
 
             rewards.append(reward)
 

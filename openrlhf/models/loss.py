@@ -58,9 +58,11 @@ class PolicyLoss(nn.Module):
     Policy Loss for PPO
     """
 
-    def __init__(self, clip_eps: float = 0.2) -> None:
+    def __init__(self, clip_eps: float = 0.2, clip_low: float = 0.2, clip_high: float = 0.2) -> None:
         super().__init__()
         self.clip_eps = clip_eps
+        self.clip_low = max(clip_eps, clip_low)
+        self.clip_high = max(clip_eps, clip_high)
 
     def forward(
         self,
@@ -71,7 +73,7 @@ class PolicyLoss(nn.Module):
     ) -> torch.Tensor:
         ratio = (log_probs - old_log_probs).exp()
         surr1 = ratio * advantages
-        surr2 = ratio.clamp(1 - self.clip_eps, 1 + self.clip_eps) * advantages
+        surr2 = ratio.clamp(1 - self.clip_low, 1 + self.clip_high) * advantages
         loss = -torch.min(surr1, surr2)
         loss = masked_mean(loss, action_mask, dim=-1).mean()
         return loss
