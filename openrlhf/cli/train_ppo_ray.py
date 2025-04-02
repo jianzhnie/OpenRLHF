@@ -180,7 +180,7 @@ def train(args):
         refs.extend(critic_model.async_init_model_from_pretrained(strategy, args.critic_pretrain, max_steps))
         ray.get(refs)
 
-    # train actor and critic mdoel
+    # train actor and critic model
     refs = actor_model.async_fit_actor_model(
         critic_model, ref_model, reward_models, args.remote_rm_url, reward_fn=reward_fn, vllm_engines=vllm_engines
     )
@@ -191,6 +191,9 @@ def train(args):
 
     if args.critic_pretrain and args.save_value_network:
         ray.get(critic_model.async_save_model())
+
+    # temp solution: Avoid main process disappeared error on Ascend NPU
+    ray.shutdown()
 
 
 if __name__ == "__main__":

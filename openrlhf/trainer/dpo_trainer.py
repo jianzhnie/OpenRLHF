@@ -15,9 +15,6 @@ from transformers.utils import is_flash_attn_2_available
 if is_flash_attn_2_available():
     from flash_attn.utils.distributed import all_gather
 
-if is_flash_attn_2_available():
-    from flash_attn.utils.distributed import all_gather
-
 
 class DPOTrainer(ABC):
     """

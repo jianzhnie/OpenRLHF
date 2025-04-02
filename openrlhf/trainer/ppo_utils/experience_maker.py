@@ -14,7 +14,7 @@ from openrlhf.models.actor import Actor
 from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
 from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
 from openrlhf.utils.logging_utils import init_logger
-from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
+from openrlhf.utils.remote_rm_utils import remote_rm_fn_ray
 
 
 logger = init_logger(__name__)
@@ -448,7 +448,7 @@ class NaiveExperienceMaker(ABC):
         rewards = (rewards_per_func * self.reward_weights).sum(dim=1)
 
         # 添加总奖励到指标中
-        reward_func_metrics['total_reward'] = rewards
+        reward_func_metrics["total_reward"] = rewards
 
         return rewards, reward_func_metrics
 
