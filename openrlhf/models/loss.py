@@ -5,7 +5,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import masked_mean, drgrpo_masked_mean
+from .utils import drgrpo_masked_mean, masked_mean
 
 
 class GPTLMLoss(nn.Module):

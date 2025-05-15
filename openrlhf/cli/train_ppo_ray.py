@@ -6,6 +6,7 @@ import ray
 import torch
 from ray.util.placement_group import placement_group
 
+from openrlhf import ACCELERATOR_TYPE
 from openrlhf.trainer.ray import (
     ActorModelRayActor,
     CriticModelRayActor,
@@ -15,7 +16,6 @@ from openrlhf.trainer.ray import (
     create_vllm_engines,
 )
 from openrlhf.utils import get_strategy
-from openrlhf import ACCELERATOR_TYPE
 
 
 # NOTE: reward function for multiple reward models, replace this with your own function!
@@ -26,38 +26,29 @@ def reward_fn(rewards: List[torch.Tensor]):
 def _validate_args(args):
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
-    assert args.rollout_batch_size % actor_world_size == 0, (
-        f"rollout_bach_size must be divisible by actor_world_size, got {args.rollout_batch_size} and {actor_world_size}"
-    )
+    assert (
+        args.rollout_batch_size % actor_world_size == 0
+    ), f"rollout_bach_size must be divisible by actor_world_size, got {args.rollout_batch_size} and {actor_world_size}"
 
-    assert args.zero_stage != 3 or args.vllm_num_engines > 0, (
-        f"ZeRO-3 is only supported when vLLM enabled"
-    )
+    assert args.zero_stage != 3 or args.vllm_num_engines > 0, f"ZeRO-3 is only supported when vLLM enabled"
 
     if args.vllm_num_engines > 0:
         assert (
-            actor_world_size % args.vllm_num_engines == 0
-            or args.vllm_num_engines % actor_world_size == 0
-        ), (
-            f"actor_world_size must be divisible by vllm_num_engines, got {actor_world_size} and {args.vllm_num_engines}"
-        )
+            actor_world_size % args.vllm_num_engines == 0 or args.vllm_num_engines % actor_world_size == 0
+        ), f"actor_world_size must be divisible by vllm_num_engines, got {actor_world_size} and {args.vllm_num_engines}"
 
     if args.critic_pretrain:
         critic_world_size = args.critic_num_nodes * args.critic_num_gpus_per_node
-        assert actor_world_size % critic_world_size == 0, (
-            f"actor_world_size must be divisible by critic_world_size, got {actor_world_size} and {critic_world_size}"
-        )
+        assert (
+            actor_world_size % critic_world_size == 0
+        ), f"actor_world_size must be divisible by critic_world_size, got {actor_world_size} and {critic_world_size}"
 
     if args.use_kl_loss:
         if args.kl_estimator not in ["k2", "k3"]:
-            print(
-                f"Recommend setting {args.kl_estimator} to 'k2' or 'k3' when using KL as a loss"
-            )
+            print(f"Recommend setting {args.kl_estimator} to 'k2' or 'k3' when using KL as a loss")
     else:
         if args.kl_estimator not in ["k1"]:
-            print(
-                f"Recommend setting {args.kl_estimator} to 'k1' when not using KL as a loss."
-            )
+            print(f"Recommend setting {args.kl_estimator} to 'k1' when not using KL as a loss.")
 
 
 def train(args):
@@ -73,25 +64,16 @@ def train(args):
             assert (
                 args.actor_num_nodes == args.ref_num_nodes
                 and args.actor_num_gpus_per_node == args.ref_num_gpus_per_node
-            ), (
-                f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
-            )
+            ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
 
-        bundles = [
-            {ACCELERATOR_TYPE: 1, "CPU": 1}
-            for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)
-        ]
+        bundles = [{ACCELERATOR_TYPE: 1, "CPU": 1} for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)]
         pg = placement_group(bundles, strategy="PACK")
         ray.get(pg.ready())
 
     # init vLLM engine for text generation
     vllm_engines = None
     if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
-        max_len = (
-            args.max_len
-            if args.max_len
-            else args.prompt_max_len + args.generate_max_len
-        )
+        max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
         if args.colocate_all_models:
             assert (
                 args.actor_num_nodes * args.actor_num_gpus_per_node
@@ -143,13 +125,10 @@ def train(args):
         assert (
             args.critic_num_nodes == args.reward_num_nodes
             and args.critic_num_gpus_per_node == args.reward_num_gpus_per_node
-        ), (
-            f"num_nodes and num_gpus_per_node must be the same when colocate critic and reward model."
-        )
+        ), f"num_nodes and num_gpus_per_node must be the same when colocate critic and reward model."
 
         bundles = [
-            {ACCELERATOR_TYPE: 1, "CPU": 1}
-            for _ in range(args.critic_num_nodes * args.critic_num_gpus_per_node)
+            {ACCELERATOR_TYPE: 1, "CPU": 1} for _ in range(args.critic_num_nodes * args.critic_num_gpus_per_node)
         ]
         pg = placement_group(bundles, strategy="PACK")
         ray.get(pg.ready())
@@ -189,9 +168,7 @@ def train(args):
     refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain))
     if not args.remote_rm_url:
         for reward_model, reward_pretrain in zip(reward_models, reward_pretrains):
-            refs.extend(
-                reward_model.async_init_model_from_pretrained(strategy, reward_pretrain)
-            )
+            refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
 
     ray.get(refs)
 
@@ -199,11 +176,7 @@ def train(args):
         # critic scheduler initialization depends on max_step, so we have to init critic after actor
         # TODO: use first reward model as critic model
         max_steps = ray.get(actor_model._actor_handlers[0].max_steps.remote())
-        refs.extend(
-            critic_model.async_init_model_from_pretrained(
-                strategy, args.critic_pretrain, max_steps
-            )
-        )
+        refs.extend(critic_model.async_init_model_from_pretrained(strategy, args.critic_pretrain, max_steps))
         ray.get(refs)
 
     # train actor and critic model
@@ -230,9 +203,7 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # Ray and vLLM
-    parser.add_argument(
-        "--ref_num_nodes", type=int, default=1, help="number of nodes for reference"
-    )
+    parser.add_argument("--ref_num_nodes", type=int, default=1, help="number of nodes for reference")
     parser.add_argument(
         "--ref_num_gpus_per_node",
         type=int,
@@ -258,18 +229,14 @@ if __name__ == "__main__":
         help="whether to colocate reference and actor model, if true, they will share same gpus.",
     )
 
-    parser.add_argument(
-        "--actor_num_nodes", type=int, default=1, help="number of nodes for actor"
-    )
+    parser.add_argument("--actor_num_nodes", type=int, default=1, help="number of nodes for actor")
     parser.add_argument(
         "--actor_num_gpus_per_node",
         type=int,
         default=8,
         help="number of gpus per node for actor",
     )
-    parser.add_argument(
-        "--critic_num_nodes", type=int, default=1, help="number of nodes for critic"
-    )
+    parser.add_argument("--critic_num_nodes", type=int, default=1, help="number of nodes for critic")
     parser.add_argument(
         "--critic_num_gpus_per_node",
         type=int,
@@ -354,12 +321,8 @@ if __name__ == "__main__":
     parser.add_argument("--l2", type=float, default=0.0, help="weight decay loss")
     parser.add_argument("--ptx_coef", type=float, default=0.05, help="PPO-ptx loss coef")
     parser.add_argument("--eps_clip", type=float, default=0.2, help="PPO clip range")
-    parser.add_argument(
-        "--eps_clip_low", type=float, default=0.2, help="PPO clip range"
-    )
-    parser.add_argument(
-        "--eps_clip_high", type=float, default=0.2, help="PPO clip range"
-    )
+    parser.add_argument("--eps_clip_low", type=float, default=0.2, help="PPO clip range")
+    parser.add_argument("--eps_clip_high", type=float, default=0.2, help="PPO clip range")
     parser.add_argument("--value_clip", type=float, default=0.2, help="PPO value clip range")
     parser.add_argument("--lambd", type=float, default=0.95, help="PPO GAE lambd")
     parser.add_argument("--gamma", type=float, default=1, help="PPO GAE gamma")
@@ -400,21 +363,13 @@ if __name__ == "__main__":
     parser.add_argument("--reward_clip_range", type=float, nargs=2, default=(-10, 10), help="Reward clip range")
 
     # DeepSpeed
-    parser.add_argument(
-        "--local_rank", type=int, default=-1, help="local_rank for deepspeed"
-    )
-    parser.add_argument(
-        "--zero_stage", type=int, default=2, help="DeepSpeed ZeRO stage"
-    )
+    parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for deepspeed")
+    parser.add_argument("--zero_stage", type=int, default=2, help="DeepSpeed ZeRO stage")
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
     parser.add_argument("--torch_compile", action="store_true", default=False)
-    parser.add_argument(
-        "--bf16", action="store_true", default=False, help="Enable bfloat16"
-    )
+    parser.add_argument("--bf16", action="store_true", default=False, help="Enable bfloat16")
     ## Make EMA as an optional feature
-    parser.add_argument(
-        "--enable_ema", action="store_true", help="Enable EMA checkpoint for the model."
-    )
+    parser.add_argument("--enable_ema", action="store_true", help="Enable EMA checkpoint for the model.")
     parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
     parser.add_argument(
         "--adam_offload",
@@ -435,13 +390,9 @@ if __name__ == "__main__":
         default=False,
         help="Enable Liger Kernel",
     )
-    parser.add_argument(
-        "--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type"
-    )
+    parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
-    parser.add_argument(
-        "--gradient_checkpointing_use_reentrant", action="store_true", default=False
-    )
+    parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true", default=False)
     parser.add_argument("--disable_fast_tokenizer", action="store_true", default=False)
     parser.add_argument(
         "--deepspeed_enable_sleep",
@@ -459,9 +410,7 @@ if __name__ == "__main__":
         help="Choose advantage estimation method: gae, reinforce, rloo, reinforce_baseline, group_norm",
     )
     parser.add_argument("--use_kl_loss", action="store_true", default=False, help="whether to use KL loss from GRPO")
-    parser.add_argument(
-        "--kl_clip_max", type=float, default=None, help="max KL clip value"
-    )
+    parser.add_argument("--kl_clip_max", type=float, default=None, help="max KL clip value")
 
     # Context Parallel
     parser.add_argument("--ring_attn_size", type=int, default=1, help="Ring attention group size")
@@ -507,12 +456,8 @@ if __name__ == "__main__":
         default=False,
         help="Enable Reward Normazation",
     )
-    parser.add_argument(
-        "--correct_reward", type=float, default=1.0, help="Correct reward score"
-    )
-    parser.add_argument(
-        "--incorrect_reward", type=float, default=0.0, help="Incorrect reward score"
-    )
+    parser.add_argument("--correct_reward", type=float, default=1.0, help="Correct reward score")
+    parser.add_argument("--incorrect_reward", type=float, default=0.0, help="Incorrect reward score")
 
     # cosine scaling parameters
     parser.add_argument(
@@ -539,9 +484,7 @@ if __name__ == "__main__":
         default=1.0,
         help="Maximum reward for correct answers",
     )
-    parser.add_argument(
-        "--cosine_max_len", type=int, default=1000, help="Maximum length for scaling"
-    )
+    parser.add_argument("--cosine_max_len", type=int, default=1000, help="Maximum length for scaling")
 
     # repetition penalty parameters
     parser.add_argument(
@@ -583,9 +526,7 @@ if __name__ == "__main__":
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
 
     # Custom dataset
-    parser.add_argument(
-        "--cache_dir", type=str, default=None, help="HF dataset or model cache dir"
-    )
+    parser.add_argument("--cache_dir", type=str, default=None, help="HF dataset or model cache dir")
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(
         "--prompt_data_probs",

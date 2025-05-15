@@ -3,6 +3,7 @@ from abc import ABC
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, Union
+
 import ray
 import torch
 import torch.distributed as dist
@@ -14,8 +15,7 @@ from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
 from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
-from openrlhf.utils.statistics import RunningMeanStd, MovAvg
-
+from openrlhf.utils.statistics import MovAvg, RunningMeanStd
 
 logger = init_logger(__name__)
 

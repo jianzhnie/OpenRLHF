@@ -8,8 +8,8 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from vllm import LLM
 
-from openrlhf.utils.logging_utils import init_logger
 from openrlhf import ACCELERATOR_TYPE
+from openrlhf.utils.logging_utils import init_logger
 
 from .utils import ray_noset_visible_devices
 
@@ -166,7 +166,7 @@ def create_vllm_engines(
             LLMRayActor.options(
                 num_cpus=num_gpus,
                 num_gpus=num_gpus if ACCELERATOR_TYPE == "GPU" else 0,
-                resources=None if ACCELERATOR_TYPE =="GPU" else {ACCELERATOR_TYPE: tensor_parallel_size},
+                resources=None if ACCELERATOR_TYPE == "GPU" else {ACCELERATOR_TYPE: tensor_parallel_size},
                 scheduling_strategy=scheduling_strategy if ACCELERATOR_TYPE == "GPU" else None,
             ).remote(
                 model=pretrain,

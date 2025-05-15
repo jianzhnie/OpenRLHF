@@ -2,7 +2,7 @@ import itertools
 import math
 import os
 import socket
-from typing import Any, Union, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Union
 
 import deepspeed
 import ray
@@ -10,6 +10,7 @@ import torch
 import torch.distributed
 from transformers.trainer import get_scheduler
 
+from openrlhf import ACCELERATOR_TYPE
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import PPOTrainer
@@ -19,7 +20,6 @@ from openrlhf.utils import blending_datasets, get_tokenizer
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 from openrlhf.utils.deepspeed.deepspeed_utils import offload_deepspeed_states, reload_deepspeed_states
 from openrlhf.utils.distributed_util import init_process_group
-from openrlhf import ACCELERATOR_TYPE
 from openrlhf.utils.template import SYSTEM_PROMPT_FACTORY
 
 from .launcher import BasePPORole

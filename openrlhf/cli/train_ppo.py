@@ -2,43 +2,24 @@ import argparse
 import itertools
 import math
 import os
-from typing import Dict
 import re
 from datetime import datetime
+from typing import Dict
+
 import torch
-from transformers.trainer import get_scheduler
 from datasets import load_dataset, load_from_disk
+from transformers.trainer import get_scheduler
+
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.utils import (
+    SYSTEM_PROMPT_FACTORY,
     blending_datasets,
     get_strategy,
     get_tokenizer,
     setup_tokenizer_and_resize,
 )
-
-
-# DeepSeek system prompt for GRPO based training
-deepseek_r1_prompt = (
-    "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
-    "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
-    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
-    "<think> reasoning process here </think><answer> answer here </answer>"
-)
-openr1_prompt = "You are a helpful AI Assistant that provides well-reasoned and detailed responses. You first think about the reasoning process as an internal monologue and then provide the user with the answer. Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>"
-
-qwen_math_template = (
-    "Please reason step by step, and put your final answer within \\boxed{}."
-)
-
-
-TEMPLATE_FACTORY = {
-    "qwen_math": qwen_math_template,
-    "deepseek_r1": deepseek_r1_prompt,
-    "openr1": openr1_prompt,
-    "no": None,
-}
 
 
 def load_data_from_disk_or_hf(data_name):
@@ -157,15 +138,11 @@ def train(args):
     # gradient_checkpointing
     if args.gradient_checkpointing:
         actor.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={
-                "use_reentrant": args.gradient_checkpointing_use_reentrant
-            }
+            gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
         )
         if critic is not None:
             critic.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={
-                    "use_reentrant": args.gradient_checkpointing_use_reentrant
-                }
+                gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
             )
 
     # configure optimizer
@@ -205,23 +182,17 @@ def train(args):
         Returns:
             Dict[str, str]: A dictionary with the updated "answer" field.
         """
-        solution_str = example.get(
-            "answer", ""
-        ).strip()  # Ensure "answer" exists and remove extra spaces
+        solution_str = example.get("answer", "").strip()  # Ensure "answer" exists and remove extra spaces
 
         # Use regex to extract the final numerical answer after '####'
         match = re.search(r"\s*####\s*(-?[0-9,]+(?:\.[0-9]+)?)\s*", solution_str)
 
         if match:
             final_answer = match.group(1)  # Extract the number only
-            final_answer = final_answer.replace(",", "").replace(
-                "$", ""
-            )  # Clean unwanted characters
+            final_answer = final_answer.replace(",", "").replace("$", "")  # Clean unwanted characters
 
             # Replace "#### number" with LaTeX boxed format
-            updated_answer = solution_str.replace(
-                f"#### {final_answer}", rf"\(\boxed{{{final_answer}}}\)"
-            )
+            updated_answer = solution_str.replace(f"#### {final_answer}", rf"\(\boxed{{{final_answer}}}\)")
         else:
             # If no match, return the original answer unchanged
             updated_answer = solution_str
@@ -237,19 +208,11 @@ def train(args):
         text = text.replace("#", "\#")
         text = text.replace("$", "\$")
         text = re.sub(r"\\sqrt(\d+)", r"\\sqrt{\1}", text)  # 修正 \sqrt 语法
-        text = re.sub(
-            r"\\tfrac\{(\d+)\}(\d+)", r"\\tfrac{\1}{\2}", text
-        )  # 修正 \tfrac 语法
+        text = re.sub(r"\\tfrac\{(\d+)\}(\d+)", r"\\tfrac{\1}{\2}", text)  # 修正 \tfrac 语法
         text = re.sub(r"\\frac (\d+) (\d+)", r"\\frac{\1}{\2}", text)  # 修正 \frac 语法
-        text = re.sub(
-            r"-\\frac{(\d+)} (\d+)", r"-\\frac{\1}{\2}", text
-        )  # 修正负分数格式
-        text = re.sub(
-            r"\\dfrac (\d+) (\d+)", r"\\dfrac{\1}{\2}", text
-        )  # 修正 \dfrac 语法
-        text = re.sub(
-            r"\\frac\\pi (\d+)", r"\\frac{\\pi}{\1}", text
-        )  # 修正 \frac\pi 语法
+        text = re.sub(r"-\\frac{(\d+)} (\d+)", r"-\\frac{\1}{\2}", text)  # 修正负分数格式
+        text = re.sub(r"\\dfrac (\d+) (\d+)", r"\\dfrac{\1}{\2}", text)  # 修正 \dfrac 语法
+        text = re.sub(r"\\frac\\pi (\d+)", r"\\frac{\\pi}{\1}", text)  # 修正 \frac\pi 语法
 
         return f"\\boxed{{{text}}}"
 
@@ -267,16 +230,12 @@ def train(args):
         formatted_answer = process_answer_to_latex(gt_answer)
         return {"solution": formatted_answer}
 
-    system_prompt = TEMPLATE_FACTORY[args.system_prompt]
+    system_prompt = SYSTEM_PROMPT_FACTORY[args.system_prompt]
 
     if "math_lvl3to5_8k" in args.prompt_data:
-        prompts_data = load_dataset(
-            "json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir
-        )
+        prompts_data = load_dataset("json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir)
     elif "math_lvl3to5_selected2k" in args.prompt_data:
-        prompts_data = load_dataset(
-            "json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir
-        )
+        prompts_data = load_dataset("json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir)
     elif "SimpleRL-Zoo-Data" in args.prompt_data:
         prompts_data = dataset = load_dataset(
             args.prompt_data,
@@ -285,9 +244,7 @@ def train(args):
             cache_dir=args.cache_dir,
         )
     elif "forAIME2024_0326" in args.prompt_data:
-        prompts_data = load_dataset(
-            "json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir
-        )
+        prompts_data = load_dataset("json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir)
     else:
         prompts_data = load_dataset(
             args.prompt_data,
@@ -304,11 +261,7 @@ def train(args):
         prompts_data = prompts_data.map(preprocess_math_lvl3to5)
 
     prompts_data = prompts_data.remove_columns(
-        [
-            col
-            for col in prompts_data.column_names
-            if col not in [args.input_key, args.label_key]
-        ]
+        [col for col in prompts_data.column_names if col not in [args.input_key, args.label_key]]
     )
 
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
@@ -316,7 +269,7 @@ def train(args):
         prompts_data,
         tokenizer,
         strategy,
-        sys_template=system_prompt,
+        system_template=system_prompt,
         input_template=args.input_template,
     )
 
@@ -573,13 +526,9 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("--use_kl_loss", action="store_true", default=False, help="whether to use KL loss from GRPO")
-    parser.add_argument(
-        "--kl_clip_max", type=float, default=None, help="max KL clip value"
-    )
+    parser.add_argument("--kl_clip_max", type=float, default=None, help="max KL clip value")
 
-    parser.add_argument(
-        "--debug", action="store_true", default=False, help="Will use debug mode"
-    )
+    parser.add_argument("--debug", action="store_true", default=False, help="Will use debug mode")
     # reward functions
     parser.add_argument(
         "--policy_loss_fn",
@@ -588,12 +537,16 @@ if __name__ == "__main__":
         help="Policy loss function. Possible values: 'ppo', 'grpo', 'drgrpo'",
     )
     parser.add_argument("--system_prompt", type=str, default="no", help="system prompt")
-    parser.add_argument('--reward_func_names', nargs='+', type=str,
-                       default=['accuracy', 'format', 'reasoning_steps', 'cosine'],
-                       help="List of reward functions. Possible values: 'accuracy', 'format', 'reasoning_steps', 'cosine', 'repetition_penalty'")
-    parser.add_argument('--reward_weights', nargs='+', type=float,
-                        default=None,
-                        help="List of reward functions weights.")
+    parser.add_argument(
+        "--reward_func_names",
+        nargs="+",
+        type=str,
+        default=["accuracy", "format", "reasoning_steps", "cosine"],
+        help="List of reward functions. Possible values: 'accuracy', 'format', 'reasoning_steps', 'cosine', 'repetition_penalty'",
+    )
+    parser.add_argument(
+        "--reward_weights", nargs="+", type=float, default=None, help="List of reward functions weights."
+    )
     parser.add_argument(
         "--normalize_rule_reward",
         action="store_true",
@@ -606,33 +559,33 @@ if __name__ == "__main__":
         default=False,
         help="Enable Reward Normazation",
     )
-    parser.add_argument(
-        "--correct_reward", type=float, default=1.0, help="Correct reward score"
-    )
-    parser.add_argument(
-        "--incorrect_reward", type=float, default=0.0, help="Incorrect reward score"
-    )
+    parser.add_argument("--correct_reward", type=float, default=1.0, help="Correct reward score")
+    parser.add_argument("--incorrect_reward", type=float, default=0.0, help="Incorrect reward score")
     # cosine scaling parameters
-    parser.add_argument('--cosine_min_value_wrong', type=float, default=-0.5,
-                       help='Minimum reward for wrong answers')
-    parser.add_argument('--cosine_max_value_wrong', type=float, default=-0.1,
-                       help='Maximum reward for wrong answers')
-    parser.add_argument('--cosine_min_value_correct', type=float, default=0.6,
-                       help='Minimum reward for correct answers')
-    parser.add_argument('--cosine_max_value_correct', type=float, default=1.0,
-                       help='Maximum reward for correct answers')
-    parser.add_argument('--cosine_max_len', type=int, default=1000,
-                       help='Maximum length for scaling')
-    
+    parser.add_argument("--cosine_min_value_wrong", type=float, default=-0.5, help="Minimum reward for wrong answers")
+    parser.add_argument("--cosine_max_value_wrong", type=float, default=-0.1, help="Maximum reward for wrong answers")
+    parser.add_argument(
+        "--cosine_min_value_correct", type=float, default=0.6, help="Minimum reward for correct answers"
+    )
+    parser.add_argument(
+        "--cosine_max_value_correct", type=float, default=1.0, help="Maximum reward for correct answers"
+    )
+    parser.add_argument("--cosine_max_len", type=int, default=1000, help="Maximum length for scaling")
+
     # repetition penalty parameters
-    parser.add_argument('--repetition_n_grams', type=int, default=3,
-                       help='Number of n-grams for repetition penalty reward')
-    parser.add_argument('--repetition_max_penalty', type=float, default=-1.0,
-                       help='Maximum (negative) penalty for repetition penalty reward')
+    parser.add_argument(
+        "--repetition_n_grams", type=int, default=3, help="Number of n-grams for repetition penalty reward"
+    )
+    parser.add_argument(
+        "--repetition_max_penalty",
+        type=float,
+        default=-1.0,
+        help="Maximum (negative) penalty for repetition penalty reward",
+    )
 
     # packing samples using Flash Attention2
     parser.add_argument("--packing_samples", action="store_true", default=False)
-    
+
     # LoRA
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
     parser.add_argument("--lora_rank", type=int, default=0)
@@ -649,9 +602,7 @@ if __name__ == "__main__":
     parser.add_argument("--value_head_prefix", type=str, default="score")
 
     # Custom dataset
-    parser.add_argument(
-        "--cache_dir", type=str, default=None, help="HF dataset or model cache dir"
-    )
+    parser.add_argument("--cache_dir", type=str, default=None, help="HF dataset or model cache dir")
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(
         "--prompt_data_probs",
@@ -736,6 +687,7 @@ if __name__ == "__main__":
 
     if args.debug:
         import os
+
         import debugpy
 
         rank = int(os.environ.get("RANK", 0))  # 获取当前进程的RANK

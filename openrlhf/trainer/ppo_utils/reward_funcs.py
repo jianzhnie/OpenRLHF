@@ -1,13 +1,15 @@
 import json
 import math
 import re
-from typing import List, Sequence, Set, Tuple, Union, Optional
+from typing import List, Optional, Sequence, Set, Tuple, Union
+
 from latex2sympy2_extended import NormalizationConfig
 from math_verify.grader import verify
 from math_verify.parser import ExprExtractionConfig, LatexExtractionConfig, parse
-from openrlhf.utils.logging_utils import init_logger
 from transformers import PreTrainedTokenizer
 from transformers.utils.import_utils import _is_package_available
+
+from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
 
@@ -37,7 +39,6 @@ class BaseRewardFunction:
 
     def validate_input(self, completions, solution=None):
         """统一的输入验证."""
-        pass
 
 
 def extract_solution(solution_str: str, method: str = "strict") -> Optional[str]:
@@ -226,7 +227,7 @@ class MathAccuracyReward(BaseRewardFunction):
 
         rewards: List[float] = []
         for content, sol in zip(completions, solution):
-            sol = f'$${sol}$$'
+            sol = f"$${sol}$$"
             gold_parsed = self.parse_expression(sol, extraction_config=self.gold_extraction_config)
 
             if not gold_parsed:

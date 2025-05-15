@@ -1,14 +1,14 @@
 from .actor import Actor
 from .loss import (
     DPOLoss,
+    DRGRPOPolicyLoss,
     GPTLMLoss,
+    GRPOPolicyLoss,
     KDLoss,
     KTOLoss,
     LogExpLoss,
     PairWiseLoss,
     PPOPolicyLoss,
-    GRPOPolicyLoss,
-    DRGRPOPolicyLoss,
     PRMLoss,
     ValueLoss,
     VanillaKTOLoss,

@@ -1,8 +1,7 @@
 import os
-import math
-import torch.nn as nn
-import torch
 
+import torch
+import torch.nn as nn
 from datasets import interleave_datasets, load_dataset, load_from_disk
 from transformers import AutoTokenizer
 
@@ -180,7 +179,7 @@ def blending_datasets(
                 strategy.print(f"loaded {dataset} from disk")
             except Exception as e:
                 strategy.print(f"failed to load {dataset} from disk: {e}")
-                data = load_dataset(dataset,name=dataset_config, data_dir=data_dir)
+                data = load_dataset(dataset, name=dataset_config, data_dir=data_dir)
                 strategy.print(f"loaded {dataset} from files")
         # remote/local folder or common file
         else:

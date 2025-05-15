@@ -1,26 +1,18 @@
 import os
 import os.path
 from abc import ABC
-from typing import Any, Union, Callable, Dict, List, Optional
-import inspect
+from typing import Any, Callable, Dict, List, Optional, Union
+
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from openrlhf.models import (
-    Actor,
-    GPTLMLoss,
-    PPOPolicyLoss,
-    GRPOPolicyLoss,
-    DRGRPOPolicyLoss,
-    ValueLoss,
-)
+from openrlhf.models import Actor, DRGRPOPolicyLoss, GPTLMLoss, GRPOPolicyLoss, PPOPolicyLoss, ValueLoss
 from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
 from openrlhf.models.utils import compute_approx_kl, masked_mean, unpacking_samples
 from openrlhf.utils.distributed_sampler import DistributedSampler
-from openrlhf.trainer.ppo_utils.reward_funcs import relu_based_reward_func_mapping
 
 from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
 
@@ -101,9 +93,7 @@ class PPOTrainer(ABC):
         **generate_kwargs,
     ) -> None:
         assert (
-            not isinstance(reward_model, List)
-            or len(reward_model) == 1
-            or reward_fn is not None
+            not isinstance(reward_model, List) or len(reward_model) == 1 or reward_fn is not None
         ), "reward_fn must be specified if using multiple reward models"
 
         super().__init__()

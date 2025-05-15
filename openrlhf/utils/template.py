@@ -11,7 +11,19 @@ deepseek_r1 = (
     "respectively, i.e., <think> reasoning process here </think> <answer> answer here </answer>."
 )
 
-SYSTEM_PROMPT_FACTORY = {"qwen_math_cot": qwen_math_cot, "deepseek_r1": deepseek_r1, "no": None,}
+openr1_prompt = (
+    "You are a helpful AI Assistant that provides well-reasoned and detailed responses."
+    "You first think about the reasoning process as an internal monologue and then provide the user with the answer."
+    "Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>"
+)
+
+
+SYSTEM_PROMPT_FACTORY = {
+    "qwen_math_cot": qwen_math_cot,
+    "deepseek_r1": deepseek_r1,
+    "openr1": openr1_prompt,
+    "no": None,
+}
 
 
 INPUT_TEMPLATE = {

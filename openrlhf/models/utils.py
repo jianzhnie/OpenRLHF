@@ -134,6 +134,7 @@ def masked_mean(tensor: torch.Tensor, mask: Optional[torch.Tensor], dim: int = N
         return tensor.mean(axis=dim)
     return (tensor * mask).sum(axis=dim) / mask.sum(axis=dim)
 
+
 def drgrpo_masked_mean(
     tensor: torch.Tensor, mask: Optional[torch.Tensor], dim: int = None, generate_max_len: int = None
 ) -> torch.Tensor:
