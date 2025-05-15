@@ -46,6 +46,16 @@ def compute_approx_kl(
         log_ratio = -log_ratio
         log_ratio = log_ratio.exp() - 1 - log_ratio
 
+    # https://github.com/OpenRLHF/OpenRLHF/issues/525
+    if kl_estimator == "k4":
+        log_ratio = log_probs.float() - log_probs_base.float()
+        if action_mask is not None:
+            log_ratio = log_ratio * action_mask
+
+        log_ratio = -log_ratio
+        k4_log_ratio = log_ratio.exp() - 1 - log_ratio
+        log_ratio = torch.where(log_ratio < 0, k4_log_ratio, torch.min(log_ratio, k4_log_ratio))
+
     if kl_clip_max is not None:
         log_ratio.clamp_(max=kl_clip_max)
 

@@ -560,7 +560,11 @@ class NaiveExperienceMaker(ABC):
             rewards = (rewards - rewards.mean(-1, keepdim=True)) / (rewards.std(-1, keepdim=True) + 1e-9)
             rewards = rewards.reshape(-1).to(device="cpu").chunk(len(experiences))
             return experiences, rewards
-        # default rewards
+        elif args.advantage_estimator == "drgrpo":
+            rewards = torch.cat([experience.info["reward"] for experience in experiences])
+            rewards = rewards.reshape(-1, args.n_samples_per_prompt).to(device="cuda")
+            rewards = rewards - rewards.mean(-1, keepdim=True)
+            rewards = rewards.reshape(-1).to(device="cpu").chunk(len(experiences))
         return experiences, [experience.info["reward"] for experience in experiences]
 
     @torch.no_grad()
