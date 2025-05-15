@@ -439,6 +439,46 @@ if __name__ == "__main__":
     parser.add_argument("--max_ckpt_mem", type=int, default=1e8)
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
 
+    # optional vLLM for text generation
+    parser.add_argument(
+        "--vllm_num_engines",
+        type=int,
+        default=None,
+        help="number of vLLM Engines, set to 0 to disable vLLM",
+    )
+    parser.add_argument(
+        "--vllm_tensor_parallel_size",
+        type=int,
+        default=1,
+        help="tensor parallel size of vLLM Engine for multi-GPU inference",
+    )
+    parser.add_argument(
+        "--vllm_sync_backend",
+        type=str,
+        default="nccl",
+        help="DeepSpeed -> vLLM weight sync backend",
+    )
+    parser.add_argument("--vllm_sync_with_ray", action="store_true", default=False)
+    parser.add_argument("--enable_prefix_caching", action="store_true", default=False)
+    parser.add_argument(
+        "--enforce_eager",
+        action="store_true",
+        default=False,
+        help="Disable CUDA graph in vLLM",
+    )
+    parser.add_argument(
+        "--vllm_enable_sleep",
+        action="store_true",
+        default=False,
+        help="Enable sleep mode for vLLM when using --colocate_all_models",
+    )
+    parser.add_argument(
+        "--vllm_gpu_memory_utilization",
+        type=float,
+        default=0.9,
+        help="vLLM gpu_memory_utilization",
+    )
+
     # PPO
     parser.add_argument("--num_episodes", type=int, default=1)
     parser.add_argument("--rollout_batch_size", type=int, default=512)

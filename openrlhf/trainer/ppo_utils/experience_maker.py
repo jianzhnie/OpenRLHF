@@ -1,3 +1,4 @@
+import inspect
 import time
 from abc import ABC
 from copy import deepcopy
@@ -13,6 +14,7 @@ from tqdm import tqdm
 from openrlhf.models.actor import Actor
 from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
 from openrlhf.models.utils import compute_approx_kl, compute_reward, masked_mean, unpacking_samples
+from openrlhf.trainer.ppo_utils.reward_funcs import relu_based_reward_func_mapping
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
 from openrlhf.utils.statistics import MovAvg, RunningMeanStd
@@ -142,12 +144,8 @@ class NaiveExperienceMaker(ABC):
         kl_controller,
         strategy=None,
         remote_rm_url: Union[list[str], str] = None,
-        reward_fn=None,
+        reward_fn: Callable[[List[torch.Tensor]], torch.Tensor] = None,
         reward_func_names: list[str] = None,
-        reward_funcs: List[Callable] = None,
-        reward_weights: torch.Tensor = None,
-        with_reward_baseline: bool = False,
-        normalize_rule_reward: bool = False,
     ) -> None:
         super().__init__()
         self.actor = actor
@@ -161,16 +159,15 @@ class NaiveExperienceMaker(ABC):
         self.strategy = strategy
         self.reward_fn = reward_fn
         self.reward_func_names = reward_func_names
-        self.reward_funcs = reward_funcs
-        self.reward_weights = reward_weights
         self.perf_stats = None
+        self.args = strategy.args
         self.advantage_estimator = strategy.args.advantage_estimator
-        self.normalize_rule_reward = normalize_rule_reward
-        if normalize_rule_reward:
+        self.normalize_rule_reward = self.args.normalize_rule_reward
+        if self.normalize_rule_reward:
             self.reward_normalizer = RunningMeanStd()
 
-        self.with_reward_baseline = with_reward_baseline
-        if with_reward_baseline:
+        self.with_reward_baseline = self.args.with_reward_baseline
+        if self.with_reward_baseline:
             self.reward_moving_avg = MovAvg(size=1024)
 
         # custom reward func for reinforced finetuning
@@ -184,6 +181,36 @@ class NaiveExperienceMaker(ABC):
             reward_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(reward_module)
             self.custom_reward_func = reward_module.reward_func
+
+        self.rule_based_reward_funcs = []
+        reward_func_names = [reward_func_names] if isinstance(reward_func_names, str) else reward_func_names
+
+        if self.reward_func_names:
+            for i, reward_func_name in enumerate(self.reward_func_names):
+                if reward_func_name in relu_based_reward_func_mapping:
+                    reward_func_class = relu_based_reward_func_mapping[reward_func_name]
+                    reward_func_args = list(inspect.signature(reward_func_class.__init__).parameters)
+                    reward_func_kwargs = {
+                        key: getattr(self.args, key)
+                        for key in reward_func_args
+                        if key not in ["self", "args", "kwargs"] and hasattr(self.args, key)
+                    }
+                    rewrad_func = reward_func_class(**reward_func_kwargs)
+                    self.rule_based_reward_funcs.append(rewrad_func)
+                else:
+                    raise ValueError(
+                        f"reward_function {reward_func_name} is not implemented in openrlhf.ppo.ppo_utils.reward_funcs"
+                    )
+        if self.args.reward_weights is not None:
+            if len(self.args.reward_weights) != len(self.reward_func_names):
+                raise ValueError(
+                    f"Number of reward weights ({len(self.args.reward_weights)}) must match number of reward "
+                    f"functions ({len(self.reward_func_names)})"
+                )
+            self.reward_weights = [float(weight) for weight in self.args.reward_weights]
+            self.reward_weights = torch.tensor(self.reward_weights, dtype=torch.float32)
+        else:
+            self.reward_weights = torch.ones(len(self.reward_func_names), dtype=torch.float32)
 
     # tokenizer
     def tokenize_fn(self, texts, max_length, padding=True, device=None):
@@ -374,7 +401,7 @@ class NaiveExperienceMaker(ABC):
             value = None
 
         # rewards
-        if self.reward_funcs:
+        if self.rule_based_reward_funcs:
             completion_ids = sequences[:, -num_actions:]
             completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
             rewards, reward_func_metrics = self.compute_func_rewards(completions, samples.labels)
@@ -413,7 +440,7 @@ class NaiveExperienceMaker(ABC):
             "num_actions": num_actions,
         }
 
-        if self.reward_funcs:
+        if self.rule_based_reward_funcs:
             info.update(reward_func_metrics)
 
         # reset model state
@@ -451,11 +478,11 @@ class NaiveExperienceMaker(ABC):
         # 初始化每个奖励函数的指标字典
         reward_func_metrics = {}
         num_completions = len(completions)
-        num_funcs = len(self.reward_funcs)
+        num_funcs = len(self.rule_based_reward_funcs)
 
         # 为每个生成的序列计算每个奖励函数的值
         rewards_per_func = torch.zeros(num_completions, num_funcs, dtype=torch.float32)
-        for i, (func_name, reward_func) in enumerate(zip(self.reward_func_names, self.reward_funcs)):
+        for i, (func_name, reward_func) in enumerate(zip(self.reward_func_names, self.rule_based_reward_funcs)):
             origin_func_reward = reward_func(completions=completions, solution=solutions)
 
             if self.normalize_rule_reward:

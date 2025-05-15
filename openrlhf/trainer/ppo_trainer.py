@@ -93,7 +93,10 @@ class PPOTrainer(ABC):
         **generate_kwargs,
     ) -> None:
         assert (
-            not isinstance(reward_model, List) or len(reward_model) == 1 or reward_fn is not None
+            not isinstance(reward_model, List)
+            or len(reward_model) == 1
+            or reward_fn is not None
+            or reward_func_names is not None,
         ), "reward_fn must be specified if using multiple reward models"
 
         super().__init__()
@@ -161,16 +164,17 @@ class PPOTrainer(ABC):
             self.kl_ctl = FixedKLController(init_kl_coef)
 
         self.experience_maker = NaiveExperienceMaker(
-            actor,
-            critic,
-            reward_model,
-            initial_model,
-            tokenizer,
-            prompt_max_len,
-            self.kl_ctl,
-            strategy,
-            remote_rm_url,
-            reward_fn,
+            actor=actor,
+            critic=critic,
+            reward_model=reward_model,
+            initial_model=initial_model,
+            tokenizer=tokenizer,
+            prompt_max_len=prompt_max_len,
+            kl_controller=self.kl_ctl,
+            strategy=strategy,
+            remote_rm_url=remote_rm_url,
+            reward_fn=reward_fn,
+            reward_func_names=reward_func_names,
         )
         packing_samples = getattr(self.args, "packing_samples", False)
         self.replay_buffer = NaiveReplayBuffer(
