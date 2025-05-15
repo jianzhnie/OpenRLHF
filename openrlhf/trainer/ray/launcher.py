@@ -8,11 +8,10 @@ import torch
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from openrlhf import ACCELERATOR_TYPE
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer.ray.utils import ray_noset_visible_devices
 from openrlhf.utils.deepspeed import DeepspeedStrategy
-from openrlhf import ACCELERATOR_TYPE, IS_NPU_AVAILABLE
+from openrlhf import ACCELERATOR_TYPE
 
 
 class DistributedTorchRayActor:
@@ -34,11 +33,8 @@ class DistributedTorchRayActor:
         # environment variable for each actor, unless
         # RAY_EXPERIMENTAL_NOSET_*_VISIBLE_DEVICES is set, so
         # set local rank to 0 when the flag is not applicable.
-        os.environ["LOCAL_RANK"] = (
-            str(ray.get_runtime_context().get_accelerator_ids()[ACCELERATOR_TYPE][0])
-            if ray_noset_visible_devices()
-            else "0"
-        )
+        os.environ["LOCAL_RANK"] = str(ray.get_runtime_context().get_accelerator_ids()[ACCELERATOR_TYPE][0]) \
+            if ray_noset_visible_devices() else "0"
 
     @staticmethod
     def _get_current_node_ip():
@@ -192,11 +188,15 @@ class PPORayActorGroup:
         self._num_gpus_per_node = num_gpus_per_node
         self.ray_actor_type = ray_actor_type
 
-        # custom resources, see https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-        self._resources = resources
-        self._num_resources_per_node = num_resources_per_node
-
-        self._initiate_actors(pg, num_gpus_per_actor)
+        if ACCELERATOR_TYPE == "GPU":
+            # custom resources, see https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
+            self._resources = resources
+            self._num_resources_per_node = num_resources_per_node
+            self._initiate_actors(pg, num_gpus_per_actor)
+        elif ACCELERATOR_TYPE == "NPU":
+            self._resources = {ACCELERATOR_TYPE: num_gpus_per_actor}
+            self._num_resources_per_node = num_gpus_per_actor
+            self._initiate_actors(pg, 0)
 
     def _initiate_actors(self, pg, num_gpus_per_actor):
         world_size = self._num_nodes * self._num_gpus_per_node
@@ -214,8 +214,8 @@ class PPORayActorGroup:
         if pg:
             master_actor = self.ray_actor_type.options(
                 num_cpus=num_gpus_per_actor,
-                num_gpus=num_gpus_per_actor if ACCELERATOR_TYPE == "GPU" else 0,
-                resources=self._resources if ACCELERATOR_TYPE == "GPU" else {ACCELERATOR_TYPE: num_gpus_per_actor},
+                num_gpus=num_gpus_per_actor,
+                resources=self._resources,
                 scheduling_strategy=PlacementGroupSchedulingStrategy(
                     placement_group=pg, placement_group_bundle_index=0
                 ),
@@ -223,8 +223,8 @@ class PPORayActorGroup:
         else:
             master_actor = self.ray_actor_type.options(
                 num_cpus=num_gpus_per_actor,
-                num_gpus=num_gpus_per_actor if ACCELERATOR_TYPE == "GPU" else 0,
-                resources=self._resources if ACCELERATOR_TYPE == "GPU" else {ACCELERATOR_TYPE: num_gpus_per_actor},
+                num_gpus=num_gpus_per_actor,
+                resources=self._resources,
             ).remote(world_size, 0, None, None)
         self._actor_handlers = [master_actor]
 
@@ -235,10 +235,8 @@ class PPORayActorGroup:
                 if pg:
                     worker_actor = self.ray_actor_type.options(
                         num_cpus=num_gpus_per_actor,
-                        num_gpus=num_gpus_per_actor if ACCELERATOR_TYPE == "GPU" else 0,
-                        resources=self._resources
-                        if ACCELERATOR_TYPE == "GPU"
-                        else {ACCELERATOR_TYPE: num_gpus_per_actor},
+                        num_gpus=num_gpus_per_actor,
+                        resources=self._resources,
                         scheduling_strategy=PlacementGroupSchedulingStrategy(
                             placement_group=pg,
                             placement_group_bundle_index=rank,
@@ -247,10 +245,8 @@ class PPORayActorGroup:
                 else:
                     worker_actor = self.ray_actor_type.options(
                         num_cpus=num_gpus_per_actor,
-                        num_gpus=num_gpus_per_actor if ACCELERATOR_TYPE == "GPU" else 0,
-                        resources=self._resources
-                        if ACCELERATOR_TYPE == "GPU"
-                        else {ACCELERATOR_TYPE: num_gpus_per_actor},
+                        num_gpus=num_gpus_per_actor,
+                        resources=self._resources,
                     ).remote(world_size, rank, master_addr, master_port)
                 self._actor_handlers.append(worker_actor)
 

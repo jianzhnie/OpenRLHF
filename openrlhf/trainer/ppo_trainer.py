@@ -9,7 +9,14 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
+from openrlhf.models import (
+    Actor,
+    GPTLMLoss,
+    PPOPolicyLoss,
+    GRPOPolicyLoss,
+    DRGRPOPolicyLoss,
+    ValueLoss,
+)
 from openrlhf.models.ring_attn_utils import pad_sequences, unpad_sequences
 from openrlhf.models.utils import compute_approx_kl, masked_mean, unpacking_samples
 from openrlhf.utils.distributed_sampler import DistributedSampler
@@ -87,14 +94,17 @@ class PPOTrainer(ABC):
         prompt_max_len: int = 128,
         dataloader_pin_memory: bool = True,
         remote_rm_url: str = None,
+        reward_fn: Callable[[List[torch.Tensor]], torch.Tensor] = None,
         reward_func_names: Union[List[str], str] = None,
         save_hf_ckpt: bool = False,
         disable_ds_ckpt: bool = False,
         **generate_kwargs,
     ) -> None:
-        assert not isinstance(reward_model, List) or len(reward_model) == 1 or reward_func_names is not None, (
-            "reward_func_names must be specified if using multiple reward models"
-        )
+        assert (
+            not isinstance(reward_model, List)
+            or len(reward_model) == 1
+            or reward_fn is not None
+        ), "reward_fn must be specified if using multiple reward models"
 
         super().__init__()
         self.strategy = strategy
@@ -113,6 +123,7 @@ class PPOTrainer(ABC):
         self.prompt_max_len = prompt_max_len
         self.ema_beta = ema_beta
         self.gradient_checkpointing = gradient_checkpointing
+        self.reward_fn = reward_fn
 
         self.actor = actor
         self.critic = critic
@@ -125,47 +136,31 @@ class PPOTrainer(ABC):
         self.actor_scheduler = actor_scheduler
         self.critic_scheduler = critic_scheduler
 
-        self.actor_loss_fn = PolicyLoss(eps_clip, clip_low=self.args.eps_clip_low, clip_high=self.args.eps_clip_high)
+        if self.args.policy_loss_fn == "ppo":
+            self.actor_loss_fn = PPOPolicyLoss(
+                eps_clip,
+                clip_low=self.args.eps_clip_low,
+                clip_high=self.args.eps_clip_high,
+            )
+        elif self.args.policy_loss_fn == "grpo":
+            self.actor_loss_fn = GRPOPolicyLoss(
+                eps_clip,
+                clip_low=self.args.eps_clip_low,
+                clip_high=self.args.eps_clip_high,
+            )
+
+        elif self.args.policy_loss_fn == "drgrpo":
+            self.actor_loss_fn = DRGRPOPolicyLoss(
+                eps_clip,
+                clip_low=self.args.eps_clip_low,
+                clip_high=self.args.eps_clip_high,
+                generate_max_len=self.args.generate_max_len,
+            )
+
         self.critic_loss_fn = ValueLoss(value_clip)
         self.ptx_loss_fn = GPTLMLoss()
 
         self.freezing_actor_steps = getattr(self.args, "freezing_actor_steps", -1)
-
-        if not isinstance(reward_func_names, list):
-            reward_func_names = [reward_func_names]
-
-        self.reward_func_names = reward_func_names
-        reward_funcs = self.reward_func_names.copy()
-
-        if self.reward_func_names:
-            for i, reward_func_name in enumerate(self.reward_func_names):
-                if reward_func_name in relu_based_reward_func_mapping:
-                    reward_func_class = relu_based_reward_func_mapping[reward_func_name]
-                    reward_func_args = list(inspect.signature(reward_func_class.__init__).parameters)
-                    reward_func_kwargs = {
-                        key: getattr(self.args, key)
-                        for key in reward_func_args
-                        if key not in ["self", "args", "kwargs"] and hasattr(self.args, key)
-                    }
-                    reward_funcs[i] = reward_func_class(**reward_func_kwargs)
-                else:
-                    raise ValueError(
-                        f"reward_function {reward_func_name} is not implemented in openrlhf.ppo.ppo_utils.reward_funcs"
-                    )
-
-        self.reward_funcs = reward_funcs
-        if not self.reward_funcs and not self.reward_model:
-            raise ValueError("You must specify reward_funcs or reward_model")
-
-        if self.args.reward_weights is not None:
-            if len(self.args.reward_weights) != len(self.reward_funcs):
-                raise ValueError(
-                    f"Number of reward weights ({len(self.args.reward_weights)}) must match number of reward "
-                    f"functions ({len(self.reward_funcs)})"
-                )
-            self.reward_weights = torch.tensor(self.args.reward_weights, dtype=torch.float32)
-        else:
-            self.reward_weights = torch.ones(len(self.reward_funcs), dtype=torch.float32)
 
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8
@@ -176,18 +171,16 @@ class PPOTrainer(ABC):
             self.kl_ctl = FixedKLController(init_kl_coef)
 
         self.experience_maker = NaiveExperienceMaker(
-            actor=actor,
-            critic=critic,
-            reward_model=reward_model,
-            initial_model=initial_model,
-            tokenizer=tokenizer,
-            prompt_max_len=prompt_max_len,
-            kl_controller=self.kl_ctl,
-            strategy=strategy,
-            remote_rm_url=remote_rm_url,
-            reward_func_names=self.reward_func_names,
-            reward_funcs=self.reward_funcs,
-            reward_weights=self.reward_weights,
+            actor,
+            critic,
+            reward_model,
+            initial_model,
+            tokenizer,
+            prompt_max_len,
+            self.kl_ctl,
+            strategy,
+            remote_rm_url,
+            reward_fn,
         )
         packing_samples = getattr(self.args, "packing_samples", False)
         self.replay_buffer = NaiveReplayBuffer(
@@ -204,12 +197,11 @@ class PPOTrainer(ABC):
             if not wandb.api.api_key:
                 wandb.login(key=strategy.args.use_wandb)
             wandb.init(
-                entity=strategy.args.wandb_org,
+                dir=self.args.save_path,
                 project=strategy.args.wandb_project,
                 group=strategy.args.wandb_group,
                 name=strategy.args.wandb_run_name,
                 config=strategy.args.__dict__,
-                reinit=True,
             )
 
             wandb.define_metric("train/global_step")
@@ -440,6 +432,7 @@ class PPOTrainer(ABC):
                     base_action_log_probs,
                     experience.action_mask,
                     kl_estimator=self.args.kl_estimator,
+                    kl_clip_max=self.args.kl_clip_max,
                 )
             else:
                 kl = torch.zeros_like(action_log_probs, dtype=action_log_probs.dtype, device=action_log_probs.device)
@@ -614,4 +607,24 @@ class PPOTrainer(ABC):
             self._save_checkpoint(args, tag, client_states)
 
     def _save_checkpoint(self, args, tag, client_states):
-        raise NotImplementedError("This method should be implemented by the subclass.")
+        if not self.disable_ds_ckpt:
+            self.strategy.save_ckpt(
+                self.actor.model,
+                os.path.join(args.ckpt_path, "_actor"),
+                tag,
+                args.max_ckpt_num,
+                args.max_ckpt_mem,
+                client_states,
+            )
+            if self.critic is not None:
+                self.strategy.save_ckpt(
+                    self.critic,
+                    os.path.join(args.ckpt_path, "_critic"),
+                    tag,
+                    args.max_ckpt_num,
+                    args.max_ckpt_mem,
+                )
+
+        if self.save_hf_ckpt:
+            save_path = os.path.join(args.ckpt_path, f"{tag}_hf")
+            self.strategy.save_model(self.actor, self.tokenizer, save_path)

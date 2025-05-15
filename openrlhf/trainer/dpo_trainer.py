@@ -5,7 +5,6 @@ import torch
 from torch.nn import functional as F
 from torch.optim import Optimizer
 from tqdm import tqdm
-from transformers.utils import is_flash_attn_2_available
 
 from openrlhf.models import DPOLoss
 from openrlhf.models.utils import log_probs_from_logits
@@ -161,10 +160,9 @@ class DPOTrainer(ABC):
                         )
                 else:
                     packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens = data
-                    packed_input_ids, packed_attention_masks = (
-                        packed_input_ids.to(torch.cuda.current_device()),
-                        packed_attention_masks.to(torch.cuda.current_device()),
-                    )
+                    packed_input_ids, packed_attention_masks = packed_input_ids.to(
+                        torch.cuda.current_device()
+                    ), packed_attention_masks.to(torch.cuda.current_device())
                     chosen_logps, rejected_logps, aux_loss, nll_loss = self.packed_samples_forward(
                         self.model, packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens
                     )
@@ -284,10 +282,9 @@ class DPOTrainer(ABC):
                         )
                 else:
                     packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens = data
-                    packed_input_ids, packed_attention_masks = (
-                        packed_input_ids.to(torch.cuda.current_device()),
-                        packed_attention_masks.to(torch.cuda.current_device()),
-                    )
+                    packed_input_ids, packed_attention_masks = packed_input_ids.to(
+                        torch.cuda.current_device()
+                    ), packed_attention_masks.to(torch.cuda.current_device())
                     chosen_logps, rejected_logps, aux_loss, _ = self.packed_samples_forward(
                         self.model, packed_input_ids, packed_attention_masks, packed_seq_lens, prompt_id_lens
                     )

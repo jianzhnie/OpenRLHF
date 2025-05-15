@@ -12,7 +12,7 @@ def preprocess_data(
     tokenizer=None,
     apply_chat_template: bool = False,
 ) -> str:
-    keys = [key for key in data if key not in ["input_key", label_key]]
+    keys = [key for key in data if key not in [input_key, label_key]]
     reward_kwargs = {key: data[key] for key in keys}
     if apply_chat_template:
         prompt = []
@@ -47,7 +47,7 @@ class PromptDataset(Dataset):
         dataset,
         tokenizer,
         strategy,
-        sys_template=None,
+        system_template=None,
         input_template=None,
     ) -> None:
         super().__init__()
@@ -63,7 +63,13 @@ class PromptDataset(Dataset):
         self.processed_inputs = []
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
             processed_input = preprocess_data(
-                data, input_key, label_key, sys_template, input_template, tokenizer, apply_chat_template
+                data,
+                input_key,
+                label_key,
+                system_template,
+                input_template,
+                tokenizer,
+                apply_chat_template,
             )
             self.processed_inputs.append(processed_input)
 

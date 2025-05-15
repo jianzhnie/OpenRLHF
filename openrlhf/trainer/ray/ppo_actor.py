@@ -2,7 +2,7 @@ import itertools
 import math
 import os
 import socket
-from typing import Callable, Dict, List
+from typing import Any, Union, Callable, Dict, List, Optional
 
 import deepspeed
 import ray
@@ -10,7 +10,6 @@ import torch
 import torch.distributed
 from transformers.trainer import get_scheduler
 
-from openrlhf import IS_NPU_AVAILABLE
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import PPOTrainer
@@ -20,7 +19,8 @@ from openrlhf.utils import blending_datasets, get_tokenizer
 from openrlhf.utils.deepspeed import DeepspeedStrategy
 from openrlhf.utils.deepspeed.deepspeed_utils import offload_deepspeed_states, reload_deepspeed_states
 from openrlhf.utils.distributed_util import init_process_group
-from openrlhf import IS_NPU_AVAILABLE
+from openrlhf import ACCELERATOR_TYPE
+from openrlhf.utils.template import SYSTEM_PROMPT_FACTORY
 
 from .launcher import BasePPORole
 from .utils import get_physical_gpu_id
@@ -32,6 +32,7 @@ class ActorPPOTrainer(PPOTrainer):
         *args,
         vllm_engines: List = None,
         remote_rm_url: List[str] = None,
+        reward_func_names: Union[List[str], str] = None,
         critic_train_remote: bool = False,
         **kwargs,
     ):
@@ -61,8 +62,9 @@ class ActorPPOTrainer(PPOTrainer):
             packing_samples=self.strategy.args.packing_samples,
         )
 
-        backend = getattr(self.strategy.args, "vllm_sync_backend", "nccl")
-        if IS_NPU_AVAILABLE:
+        if ACCELERATOR_TYPE == "GPU":
+            backend = getattr(self.strategy.args, "vllm_sync_backend", "nccl")
+        elif ACCELERATOR_TYPE == "NPU":
             backend = "hccl"
 
         self.use_cuda_ipc = False
@@ -400,13 +402,19 @@ class ActorModelRayActor(BasePPORole):
             args.prompt_data_probs,
             strategy,
             args.seed,
+            args.dataset_config,
             max_count=args.max_samples,
             return_eval=False,
             train_split=args.prompt_split,
         )
         prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
+        system_prompt = SYSTEM_PROMPT_FACTORY[args.system_prompt]
         self.prompts_dataset = PromptDataset(
-            prompts_data, self.tokenizer, strategy, input_template=args.input_template
+            prompts_data,
+            self.tokenizer,
+            strategy,
+            system_template=system_prompt,
+            input_template=args.input_template,
         )
         self.prompts_dataloader = strategy.setup_dataloader(
             self.prompts_dataset,

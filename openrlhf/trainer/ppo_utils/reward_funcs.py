@@ -1,12 +1,10 @@
 import json
 import math
 import re
-from typing import List, Sequence, Set, Tuple, Union
-
+from typing import List, Sequence, Set, Tuple, Union, Optional
 from latex2sympy2_extended import NormalizationConfig
 from math_verify.grader import verify
-from math_verify.parser import (ExprExtractionConfig, LatexExtractionConfig,
-                                parse)
+from math_verify.parser import ExprExtractionConfig, LatexExtractionConfig, parse
 from openrlhf.utils.logging_utils import init_logger
 from transformers import PreTrainedTokenizer
 from transformers.utils.import_utils import _is_package_available
@@ -14,7 +12,7 @@ from transformers.utils.import_utils import _is_package_available
 logger = init_logger(__name__)
 
 # Use same as transformers.utils.import_utils
-_e2b_available = _is_package_available('e2b')
+_e2b_available = _is_package_available("e2b")
 
 
 def is_e2b_available() -> bool:
@@ -40,6 +38,97 @@ class BaseRewardFunction:
     def validate_input(self, completions, solution=None):
         """统一的输入验证."""
         pass
+
+
+def extract_solution(solution_str: str, method: str = "strict") -> Optional[str]:
+    """
+    Extracts the final numerical solution from a given string.
+
+    Args:
+        solution_str (str): The string containing the solution.
+        method (str): Extraction method ('strict' or 'flexible').
+                      - 'strict': Looks for a specific pattern (#### <number>).
+                      - 'flexible': Extracts the last valid number from the string.
+
+    Returns:
+        Optional[str]: Extracted solution as a string if found, otherwise None.
+    """
+    if method not in {"strict", "flexible"}:
+        raise ValueError("Method must be either 'strict' or 'flexible'.")
+
+    if method == "strict":
+        # Look for a number prefixed by '#### '
+        match = re.search(r"#### (-?[0-9.,]+)", solution_str)
+        if match:
+            # Extract the number and clean formatting (remove commas, dollar signs)
+            return match.group(1).replace(",", "").replace("$", "")
+        return None  # No valid match found
+
+    elif method == "flexible":
+        # Find all numeric values in the string
+        numbers = re.findall(r"-?[0-9.,]+", solution_str)
+
+        # Filter out invalid numbers (e.g., '.' alone)
+        numbers = [num for num in numbers if num not in {"", "."}]
+
+        # Return the last valid number found, or None if none exist
+        return numbers[-1] if numbers else None
+
+    return None  # Redundant but keeps function structure clear
+
+
+class GSM8KAccuracyReward:
+    """
+    A reward model for evaluating GSM8K solutions.
+
+    Reference: Trung, Luong, et al.
+    "Reft: Reasoning with reinforced fine-tuning."
+    Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers). 2024.
+    """
+
+    def __init__(self, method: str = "strict", correct_reward: float = 1.0):
+        """
+        Initializes the reward model.
+
+        Args:
+            method (str): The extraction method ('strict' or 'flexible').
+            correct_reward (float): Reward value for correct answers.
+        """
+        if method not in {"strict", "flexible"}:
+            raise ValueError("Method must be 'strict' or 'flexible'.")
+
+        self.method = method
+        self.correct_reward = correct_reward  # Store the reward value
+
+    def __call__(self, completions: List[str], solutions: List[str]) -> List[float]:
+        """
+        Computes rewards for a batch of completions.
+
+        Args:
+            completions (List[str]): List of model-generated answers.
+            solutions (List[str]): List of ground-truth solutions.
+
+        Returns:
+            List[float]: A list of rewards (1.0 for correct answers, 0.0 otherwise).
+        """
+        if len(completions) != len(solutions):
+            raise ValueError(
+                f"Completions length ({len(completions)}) does not match solutions length ({len(solutions)})"
+            )
+
+        rewards: List[float] = []
+
+        for completion, ground_truth in zip(completions, solutions):
+            extracted_answer = extract_solution(solution_str=completion, method=self.method)
+
+            if extracted_answer is None:
+                reward = 0.0
+            else:
+                reward = self.correct_reward if extracted_answer == ground_truth else 0.0
+
+            rewards.append(reward)
+
+        return rewards
 
 
 class MathAccuracyReward(BaseRewardFunction):
@@ -68,7 +157,7 @@ class MathAccuracyReward(BaseRewardFunction):
     def __init__(
         self,
         correct_reward: float = 1.0,
-        incorrect_reward: float = -1.0,
+        incorrect_reward: float = 0.0,
         neutral_reward: float = 0.0,
         gold_is_latex: bool = True,
     ) -> None:
@@ -82,9 +171,7 @@ class MathAccuracyReward(BaseRewardFunction):
         self.incorrect_reward = incorrect_reward
         self.neutral_reward = neutral_reward
 
-        self.gold_extraction_config: List[LatexExtractionConfig] = [
-            LatexExtractionConfig()
-        ]
+        self.gold_extraction_config: List[LatexExtractionConfig] = [LatexExtractionConfig()]
         # We require the answer to be provided in correct latex (no malformed operators)
         self.answer_extraction_config: List[LatexExtractionConfig] = [
             LatexExtractionConfig(
@@ -93,7 +180,7 @@ class MathAccuracyReward(BaseRewardFunction):
                     malformed_operators=False,
                     basic_latex=True,
                     equations=True,
-                    boxed='all',
+                    boxed="all",
                     units=True,
                 ),
                 boxed_match_priority=0,
@@ -102,8 +189,7 @@ class MathAccuracyReward(BaseRewardFunction):
         ]
         self.gold_is_latex = gold_is_latex
 
-    def parse_expression(self, expression: str,
-                         extraction_config: List[LatexExtractionConfig]):
+    def parse_expression(self, expression: str, extraction_config: List[LatexExtractionConfig]):
         """Parses a mathematical expression using latex2sympy2.
 
         Args:
@@ -117,17 +203,13 @@ class MathAccuracyReward(BaseRewardFunction):
             return None  # 避免解析空字符串
 
         try:
-            result = parse(expression,
-                           extraction_mode='first_match',
-                           extraction_config=extraction_config)
+            result = parse(expression, extraction_mode="first_match", extraction_config=extraction_config)
             return result or None  # 直接返回结果或 None
         except Exception as e:
-            logger.info(
-                f'Parsing failed for expression: {expression}, Error: {e}')
+            logger.info(f"Parsing failed for expression: {expression}, Error: {e}")
             return None
 
-    def __call__(self, completions: List[str], solution: List[str],
-                 **kwargs) -> List[float]:
+    def __call__(self, completions: List[str], solution: List[str], **kwargs) -> List[float]:
         """Computes accuracy-based rewards for mathematical expressions.
 
         Args:
@@ -144,17 +226,16 @@ class MathAccuracyReward(BaseRewardFunction):
 
         rewards: List[float] = []
         for content, sol in zip(completions, solution):
-            gold_parsed = self.parse_expression(
-                sol, extraction_config=self.gold_extraction_config)
+            sol = f'$${sol}$$'
+            gold_parsed = self.parse_expression(sol, extraction_config=self.gold_extraction_config)
 
             if not gold_parsed:
                 # Assign neutral reward if the ground truth cannot be parsed
-                logger.info(f'Warning: Failed to parse gold solution: {sol}')
+                logger.info(f"Warning: Failed to parse gold solution: {sol}")
                 rewards.append(self.correct_reward)
                 continue
 
-            answer_parsed = self.parse_expression(
-                content, extraction_config=self.answer_extraction_config)
+            answer_parsed = self.parse_expression(content, extraction_config=self.answer_extraction_config)
 
             if not answer_parsed:
                 rewards.append(self.incorrect_reward)  # Invalid model response
@@ -200,17 +281,13 @@ class MathAccuracyRewardV2(BaseRewardFunction):
         super().__init__(**kwargs)
 
         # Ensure extraction config is a list (not a tuple)
-        self.gold_extraction_config: Sequence = ([
-            LatexExtractionConfig()
-        ] if gold_is_latex else [ExprExtractionConfig()])
-        self.answer_extraction_config: Sequence = [
-            ExprExtractionConfig(),
-            LatexExtractionConfig()
-        ]
+        self.gold_extraction_config: Sequence = (
+            [LatexExtractionConfig()] if gold_is_latex else [ExprExtractionConfig()]
+        )
+        self.answer_extraction_config: Sequence = [ExprExtractionConfig(), LatexExtractionConfig()]
         self.precision: int = 6
 
-    def parse_expression(self, expression: str,
-                         extraction_config: List[LatexExtractionConfig]):
+    def parse_expression(self, expression: str, extraction_config: List[LatexExtractionConfig]):
         """Parses a mathematical expression using latex2sympy2.
 
         Args:
@@ -224,17 +301,13 @@ class MathAccuracyRewardV2(BaseRewardFunction):
             return None  # 避免解析空字符串
 
         try:
-            result = parse(expression,
-                           extraction_mode='first_match',
-                           extraction_config=extraction_config)
+            result = parse(expression, extraction_mode="first_match", extraction_config=extraction_config)
             return result or None  # 直接返回结果或 None
         except Exception as e:
-            logger.info(
-                f'Parsing failed for expression: {expression}, Error: {e}')
+            logger.info(f"Parsing failed for expression: {expression}, Error: {e}")
             return None
 
-    def __call__(self, completions: List[str], solution: List[str],
-                 **kwargs) -> List[float]:
+    def __call__(self, completions: List[str], solution: List[str], **kwargs) -> List[float]:
         """Computes accuracy-based rewards for mathematical expressions.
 
         Args:
@@ -246,17 +319,15 @@ class MathAccuracyRewardV2(BaseRewardFunction):
         """
         rewards = []
         for content, sol in zip(completions, solution):
-            gold_parsed = self.parse_expression(
-                sol, extraction_config=self.gold_extraction_config)
+            gold_parsed = self.parse_expression(sol, extraction_config=self.gold_extraction_config)
 
             if not gold_parsed:
                 # Assign neutral reward if the ground truth cannot be parsed
-                logger.warning(f'Failed to parse ground truth solution: {sol}')
+                logger.warning(f"Failed to parse ground truth solution: {sol}")
                 rewards.append(0.5)
                 continue
 
-            answer_parsed = self.parse_expression(
-                content, extraction_config=self.answer_extraction_config)
+            answer_parsed = self.parse_expression(content, extraction_config=self.answer_extraction_config)
 
             if not answer_parsed:
                 # Penalize unparseable model outputs
@@ -265,12 +336,9 @@ class MathAccuracyRewardV2(BaseRewardFunction):
 
             try:
                 # Reward 1 if the content is the same as the ground truth, 0 otherwise
-                reward = float(
-                    verify(gold_parsed, answer_parsed, self.precision))
+                reward = float(verify(gold_parsed, answer_parsed, self.precision))
             except Exception as e:
-                logger.error(
-                    f'Verification failed: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}'
-                )
+                logger.error(f"Verification failed: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}")
                 reward = 0.0
 
             rewards.append(reward)
@@ -307,10 +375,8 @@ class FormatReward(BaseRewardFunction):
     def __init__(self):
         # Regular expression patterns for checking format validity
         self.patterns = [
-            re.compile(r'^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$',
-                       re.DOTALL | re.MULTILINE),
-            re.compile(r'^<think>.*?</think>\s*<answer>.*?</answer>(?![\s\S])',
-                       re.DOTALL | re.MULTILINE),
+            re.compile(r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$", re.DOTALL | re.MULTILINE),
+            re.compile(r"^<think>.*?</think>\s*<answer>.*?</answer>(?![\s\S])", re.DOTALL | re.MULTILINE),
         ]
 
     def is_valid_format(self, content: str) -> bool:
@@ -334,22 +400,15 @@ class FormatReward(BaseRewardFunction):
         Returns:
             List[float]: List of rewards (1.0 if formatted correctly, else 0.0).
         """
-        return [
-            1.0 if self.is_valid_format(content) else 0.0
-            for content in completions
-        ]
+        return [1.0 if self.is_valid_format(content) else 0.0 for content in completions]
 
 
 class ReActFormat(BaseRewardFunction):
-
     def __call__(self, completions, **kwargs) -> List[float]:
         """Reward function that checks if the completion has a specific
         format."""
-        pattern = r'^<think>.*?</think>\s*Action:.*?Action Input:.*?$'
-        matches = [
-            re.match(pattern, content, re.DOTALL | re.MULTILINE)
-            for content in completions
-        ]
+        pattern = r"^<think>.*?</think>\s*Action:.*?Action Input:.*?$"
+        matches = [re.match(pattern, content, re.DOTALL | re.MULTILINE) for content in completions]
         return [1.0 if match else 0.0 for match in matches]
 
 
@@ -381,13 +440,13 @@ class TagCountReward(BaseRewardFunction):
             float: A reward score between `0.0` and `1.0`, based on tag correctness.
         """
         reward = 0.0
-        if text.count('<think>\n') == 1:
+        if text.count("<think>\n") == 1:
             reward += 0.25
-        if text.count('\n</think>\n') == 1:
+        if text.count("\n</think>\n") == 1:
             reward += 0.25
-        if text.count('\n<answer>\n') == 1:
+        if text.count("\n<answer>\n") == 1:
             reward += 0.25
-        if text.count('\n</answer>') == 1:
+        if text.count("\n</answer>") == 1:
             reward += 0.25
         return reward
 
@@ -431,9 +490,7 @@ class ReasoningStepReward(BaseRewardFunction):
     """
 
     # Regex pattern to detect reasoning step indicators
-    REASONING_PATTERN = re.compile(
-        r'(Step \d+:|^\d+\.|\n-|\n\*|First,|Second,|Next,|Finally,)',
-        re.MULTILINE)
+    REASONING_PATTERN = re.compile(r"(Step \d+:|^\d+\.|\n-|\n\*|First,|Second,|Next,|Finally,)", re.MULTILINE)
 
     @staticmethod
     def count_reasoning_steps(text: str) -> int:
@@ -456,11 +513,7 @@ class ReasoningStepReward(BaseRewardFunction):
         Returns:
             List[float]: Reward scores between `0.0` and `1.0` for each completion.
         """
-        return [
-            min(1.0,
-                self.count_reasoning_steps(content) / 3)
-            for content in completions
-        ]
+        return [min(1.0, self.count_reasoning_steps(content) / 3) for content in completions]
 
 
 class LengthReward(BaseRewardFunction):
@@ -492,8 +545,7 @@ class LengthReward(BaseRewardFunction):
         self.tokenizer = tokenizer
         self.accuracy_orm = accuracy_orm or MathAccuracyReward()
 
-    def __call__(self, completions: List[str], solution: List[str],
-                 **kwargs) -> List[float]:
+    def __call__(self, completions: List[str], solution: List[str], **kwargs) -> List[float]:
         """Computes length-based rewards for each completion.
 
         Args:
@@ -508,10 +560,7 @@ class LengthReward(BaseRewardFunction):
         correctness_scores = self.accuracy_orm(completions, solution, **kwargs)
 
         # Calculate response lengths using tokenizer
-        lengths = [
-            len(self.tokenizer.encode(content, add_special_tokens=False))
-            for content in completions
-        ]
+        lengths = [len(self.tokenizer.encode(content, add_special_tokens=False)) for content in completions]
 
         # Determine min and max lengths for scaling
         min_len, max_len = min(lengths), max(lengths)
@@ -559,7 +608,6 @@ class CosineScaledReward(BaseRewardFunction):
         cosine_max_len: int = 1000,
         accuracy_orm: Union[BaseRewardFunction, None] = None,
     ) -> None:
-
         self.tokenizer = tokenizer
         self.min_value_wrong = cosine_min_value_wrong
         self.max_value_wrong = cosine_max_value_wrong
@@ -569,8 +617,7 @@ class CosineScaledReward(BaseRewardFunction):
         self.accuracy_orm = accuracy_orm or MathAccuracyReward()
 
     @staticmethod
-    def cosine_scaled_reward(t: int, T: int, min_value: float,
-                             max_value: float) -> float:
+    def cosine_scaled_reward(t: int, T: int, min_value: float, max_value: float) -> float:
         """Computes a cosine-scaled reward value based on response length.
 
         Args:
@@ -585,8 +632,7 @@ class CosineScaledReward(BaseRewardFunction):
         cosine_value = math.cos(t * math.pi / T)
         return min_value + 0.5 * (max_value - min_value) * (1.0 + cosine_value)
 
-    def __call__(self, completions: List[str], solution: List[str],
-                 **kwargs) -> List[float]:
+    def __call__(self, completions: List[str], solution: List[str], **kwargs) -> List[float]:
         """Computes cosine-scaled rewards for a list of model completions.
 
         Args:
@@ -601,11 +647,10 @@ class CosineScaledReward(BaseRewardFunction):
         rewards = []
 
         for content, acc_reward in zip(completions, acc_rewards):
-            gen_len = len(
-                self.tokenizer.encode(content, add_special_tokens=False))
+            gen_len = len(self.tokenizer.encode(content, add_special_tokens=False))
 
             if gen_len == 0:
-                logger.warning(f'Skipping empty completion: {content}')
+                logger.warning(f"Skipping empty completion: {content}")
                 rewards.append(self.min_value_wrong)
                 # Assign minimum penalty for empty responses
                 continue
@@ -619,8 +664,7 @@ class CosineScaledReward(BaseRewardFunction):
                 min_value, max_value = self.max_value_wrong, self.min_value_wrong  # Fixed logic
 
             # Compute scaled reward
-            reward = self.cosine_scaled_reward(gen_len, self.max_len,
-                                               min_value, max_value)
+            reward = self.cosine_scaled_reward(gen_len, self.max_len, min_value, max_value)
             rewards.append(reward)
 
         return rewards
@@ -654,13 +698,9 @@ class RepetitionPenalty(BaseRewardFunction):
         ```
     """
 
-    def __init__(self,
-                 repetition_n_grams: int = 3,
-                 repetition_max_penalty: float = -1.0):
+    def __init__(self, repetition_n_grams: int = 3, repetition_max_penalty: float = -1.0):
         if repetition_max_penalty > 0:
-            raise ValueError(
-                f'`repetition_max_penalty` should not be positive: {repetition_max_penalty}'
-            )
+            raise ValueError(f"`repetition_max_penalty` should not be positive: {repetition_max_penalty}")
 
         self.ngram_size = repetition_n_grams
         self.max_penalty = repetition_max_penalty
@@ -679,9 +719,7 @@ class RepetitionPenalty(BaseRewardFunction):
         words = text.lower().split()
         if len(words) < ngram_size:
             return set()
-        return set(
-            tuple(words[i:i + ngram_size])
-            for i in range(len(words) - ngram_size + 1))
+        return set(tuple(words[i : i + ngram_size]) for i in range(len(words) - ngram_size + 1))
 
     def __call__(self, completions: List[str], **kwargs) -> List[float]:
         """Computes repetition penalties for a list of completions.
@@ -703,8 +741,7 @@ class RepetitionPenalty(BaseRewardFunction):
 
             # Compute total n-grams and unique n-grams
             total_ngrams = len(words) - self.ngram_size + 1
-            unique_ngrams = len(
-                self.extract_ngrams(completion, self.ngram_size))
+            unique_ngrams = len(self.extract_ngrams(completion, self.ngram_size))
 
             # Compute repetition scaling factor
             repetition_ratio = 1 - (unique_ngrams / total_ngrams)
@@ -716,9 +753,9 @@ class RepetitionPenalty(BaseRewardFunction):
 
 
 def extract_code(completion: str) -> str:
-    pattern = re.compile(r'```python\n(.*?)```', re.DOTALL)
+    pattern = re.compile(r"```python\n(.*?)```", re.DOTALL)
     matches = pattern.findall(completion)
-    extracted_answer = matches[-1] if len(matches) >= 1 else ''
+    extracted_answer = matches[-1] if len(matches) >= 1 else ""
     return extracted_answer
 
 
@@ -730,11 +767,10 @@ class CodeReward(BaseRewardFunction):
     """
 
     def __call__(self, completions, solution, **kwargs) -> List[float]:
-
         if not is_e2b_available():
             raise ImportError(
-                'E2B is not available and required for this reward function. Please install E2B with '
-                '`pip install e2b-code-interpreter` and add an API key to a `.env` file.'
+                "E2B is not available and required for this reward function. Please install E2B with "
+                "`pip install e2b-code-interpreter` and add an API key to a `.env` file."
             )
 
         rewards = []
@@ -775,37 +811,36 @@ class CodeReward(BaseRewardFunction):
 
             evaluate_code(code_snippet, test_cases)
             """
-            verification_info = kwargs['verification_info']
+            verification_info = kwargs["verification_info"]
             scripts = [
                 evaluation_script_template.format(
-                    code=json.dumps(code),
-                    test_cases=json.dumps(json.dumps(info['test_cases'])))
+                    code=json.dumps(code), test_cases=json.dumps(json.dumps(info["test_cases"]))
+                )
                 for code, info in zip(completions, verification_info)
             ]
             with Sandbox(timeout=30, request_timeout=3) as sbx:
                 for script in scripts:
-                    execution = sbx.run_code(
-                        script, language=verification_info['language'])
+                    execution = sbx.run_code(script, language=verification_info["language"])
                     try:
                         output = float(execution.text)
                     except (TypeError, ValueError):
                         output = 0.0
                     rewards.append(output)
         except Exception as e:
-            logger.info(f'Error from E2B executor: {e}')
+            logger.info(f"Error from E2B executor: {e}")
             rewards = [0.0] * len(completions)
         return rewards
 
 
 relu_based_reward_func_mapping = {
-    'accuracy': MathAccuracyReward,
-    'accuracy_v2': MathAccuracyRewardV2,
-    'format': FormatReward,
-    'react_format': ReActFormat,
-    'tag_reward': TagCountReward,
-    'reasoning_steps': ReasoningStepReward,
-    'length': LengthReward,
-    'cosine': CosineScaledReward,
-    'repetition': RepetitionPenalty,
+    "gsm8k": GSM8KAccuracyReward,
+    "accuracy": MathAccuracyReward,
+    "accuracy_v2": MathAccuracyRewardV2,
+    "format": FormatReward,
+    "react_format": ReActFormat,
+    "tag_reward": TagCountReward,
+    "reasoning_steps": ReasoningStepReward,
+    "length": LengthReward,
+    "cosine": CosineScaledReward,
+    "repetition": RepetitionPenalty,
 }
-

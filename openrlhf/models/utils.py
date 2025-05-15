@@ -9,6 +9,7 @@ def compute_approx_kl(
     log_probs_base: torch.Tensor,
     action_mask: Optional[torch.Tensor] = None,
     kl_estimator: str = "k1",
+    kl_clip_max: float = None,
 ) -> torch.Tensor:
     """
     Compute the approximate KL divergence between two distributions.
@@ -44,6 +45,9 @@ def compute_approx_kl(
             log_ratio = log_ratio * action_mask
         log_ratio = -log_ratio
         log_ratio = log_ratio.exp() - 1 - log_ratio
+
+    if kl_clip_max is not None:
+        log_ratio.clamp_(max=kl_clip_max)
 
     return log_ratio
 
@@ -129,6 +133,13 @@ def masked_mean(tensor: torch.Tensor, mask: Optional[torch.Tensor], dim: int = N
     if mask is None:
         return tensor.mean(axis=dim)
     return (tensor * mask).sum(axis=dim) / mask.sum(axis=dim)
+
+def drgrpo_masked_mean(
+    tensor: torch.Tensor, mask: Optional[torch.Tensor], dim: int = None, generate_max_len: int = None
+) -> torch.Tensor:
+    if mask is None:
+        return tensor.mean(axis=dim)
+    return (tensor * mask).sum(axis=dim) / generate_max_len
 
 
 def masked_normalize(tensor: torch.Tensor, mask: torch.Tensor, dim: int = 1, eps: float = 1e-8) -> torch.Tensor:

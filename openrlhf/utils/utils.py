@@ -1,4 +1,7 @@
 import os
+import math
+import torch.nn as nn
+import torch
 
 from datasets import interleave_datasets, load_dataset, load_from_disk
 from transformers import AutoTokenizer
@@ -15,6 +18,103 @@ def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=
         model.config.pad_token_id = tokenizer.pad_token_id
 
     return tokenizer
+
+
+def setup_tokenizer_and_resize(pretrain, model, padding_side="left", strategy=None, use_fast=True):
+    # 加载 tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        pretrain, trust_remote_code=True, local_files_only=True, use_fast=use_fast
+    )
+    tokenizer.padding_side = padding_side
+
+    # 设置 pad_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+    print(f"Tokenizer vocab size: {len(tokenizer)}")
+
+    # Resize embeddings safely
+    safe_resize_token_embeddings(model, len(tokenizer))
+
+    return tokenizer
+
+
+def safe_resize_token_embeddings(model, new_vocab_size):
+    """
+    自动判断是否为 NormHead 并安全地扩展 vocab，支持权重共享。
+    """
+    # 检查是否有权重共享
+    shared_weights = (
+        hasattr(model, "lm_head")
+        and hasattr(model, "get_input_embeddings")
+        and model.lm_head.weight.data_ptr() == model.get_input_embeddings().weight.data_ptr()
+    )
+
+    if hasattr(model, "resize_token_embeddings"):
+        try:
+            model.resize_token_embeddings(new_vocab_size)
+            return  # 如果能正常处理，直接用
+        except TypeError as e:
+            print(f"[Warning] Default resize failed: {e}")
+            print("-> Fallback to custom resize for non-Linear lm_head...")
+
+    # 自定义处理
+    resize_embeddings(model, new_vocab_size)
+
+    if shared_weights:
+        # 再次设置 lm_head.weight 与 embedding.weight 共享
+        model.lm_head.weight = model.get_input_embeddings().weight
+        print("-> Re-tied lm_head.weight with input embeddings.")
+    else:
+        custom_resize_lm_head(model, new_vocab_size)
+
+
+def resize_embeddings(model, new_vocab_size):
+    """
+    Resize input embeddings manually if needed.
+    """
+    old_embeddings = model.get_input_embeddings()
+    old_vocab_size, hidden_size = old_embeddings.weight.shape
+
+    if new_vocab_size == old_vocab_size:
+        return
+
+    new_embed = nn.Embedding(new_vocab_size, hidden_size)
+    new_embed.weight.data.normal_(mean=0.0, std=0.02)
+
+    # Copy overlapping part
+    num_tokens_to_copy = min(old_vocab_size, new_vocab_size)
+    new_embed.weight.data[:num_tokens_to_copy] = old_embeddings.weight.data[:num_tokens_to_copy]
+
+    model.set_input_embeddings(new_embed)
+    print("-> Resized input embeddings.")
+
+
+def custom_resize_lm_head(model, new_vocab_size):
+    """
+    处理自定义的 NormHead 类型。
+    """
+    lm_head = model.lm_head
+    if hasattr(lm_head, "weight"):
+        old_vocab_size, hidden_size = lm_head.weight.shape
+
+        if new_vocab_size == old_vocab_size:
+            return
+
+        new_weight = nn.Parameter(torch.empty((new_vocab_size, hidden_size)))
+        new_weight.data.normal_(mean=0.0, std=0.02)
+
+        # Copy overlapping part safely
+        num_tokens_to_copy = min(old_vocab_size, new_vocab_size)
+        new_weight.data[:num_tokens_to_copy] = lm_head.weight.data[:num_tokens_to_copy]
+
+        lm_head.weight = new_weight
+
+        print(f"-> Resized lm_head from {old_vocab_size} to {new_vocab_size}.")
+    else:
+        raise ValueError("lm_head does not have a weight attribute.")
 
 
 def get_strategy(args):
@@ -38,6 +138,7 @@ def blending_datasets(
     probabilities,
     strategy=None,
     seed=42,
+    dataset_config=None,
     max_count=5000000,
     return_eval=True,
     stopping_strategy="first_exhausted",
@@ -79,11 +180,11 @@ def blending_datasets(
                 strategy.print(f"loaded {dataset} from disk")
             except Exception as e:
                 strategy.print(f"failed to load {dataset} from disk: {e}")
-                data = load_dataset(dataset, data_dir=data_dir)
+                data = load_dataset(dataset,name=dataset_config, data_dir=data_dir)
                 strategy.print(f"loaded {dataset} from files")
         # remote/local folder or common file
         else:
-            data = load_dataset(dataset, data_dir=data_dir)
+            data = load_dataset(dataset, name=dataset_config, data_dir=data_dir)
             strategy.print(f"loaded {dataset} from files")
 
         if train_split and train_split in data:

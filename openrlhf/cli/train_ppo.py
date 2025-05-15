@@ -2,23 +2,49 @@ import argparse
 import itertools
 import math
 import os
+from typing import Dict
+import re
 from datetime import datetime
 import torch
 from transformers.trainer import get_scheduler
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
-from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+from openrlhf.utils import (
+    blending_datasets,
+    get_strategy,
+    get_tokenizer,
+    setup_tokenizer_and_resize,
+)
 
 
 # DeepSeek system prompt for GRPO based training
-SYSTEM_PROMPT = (
+deepseek_r1_prompt = (
     "A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
     "first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
     "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
     "<think> reasoning process here </think><answer> answer here </answer>"
 )
+openr1_prompt = "You are a helpful AI Assistant that provides well-reasoned and detailed responses. You first think about the reasoning process as an internal monologue and then provide the user with the answer. Respond in the following format: <think>\n...\n</think>\n<answer>\n...\n</answer>"
+
+qwen_math_template = (
+    "Please reason step by step, and put your final answer within \\boxed{}."
+)
+
+
+TEMPLATE_FACTORY = {
+    "qwen_math": qwen_math_template,
+    "deepseek_r1": deepseek_r1_prompt,
+    "openr1": openr1_prompt,
+    "no": None,
+}
+
+
+def load_data_from_disk_or_hf(data_name):
+    if os.path.exists(data_name):
+        return load_from_disk(data_name)
+    return load_dataset(data_name)
 
 
 def train(args):
@@ -38,8 +64,6 @@ def train(args):
         target_modules=args.target_modules,
         lora_dropout=args.lora_dropout,
         ds_config=strategy.get_ds_train_config(is_actor=True),
-        temperature=strategy.args.temperature,
-        use_liger_kernel=args.use_liger_kernel,
     )
 
     if args.actor_init_on_gpu:
@@ -86,12 +110,28 @@ def train(args):
     strategy.print(critic)
 
     # configure tokenizer
-    tokenizer = get_tokenizer(args.pretrain, actor.model, "left", strategy, use_fast=not args.disable_fast_tokenizer)
+    if "naohai" in args.pretrain:
+        tokenizer = setup_tokenizer_and_resize(
+            args.pretrain,
+            actor.model,
+            "left",
+            strategy,
+            use_fast=not args.disable_fast_tokenizer,
+        )
+    else:
+        tokenizer = get_tokenizer(
+            args.pretrain,
+            actor.model,
+            "left",
+            strategy,
+            use_fast=not args.disable_fast_tokenizer,
+        )
+
     args.tokenizer = tokenizer
-    
+
     # load weights for reference actor
     if args.init_kl_coef == 0:
-        print("init_kl_coef:", init_kl_coef)
+        print("init_kl_coef:", args.init_kl_coef)
         initial_model = None
     else:
         initial_model = Actor(
@@ -100,10 +140,8 @@ def train(args):
             bf16=args.bf16,
             load_in_4bit=args.load_in_4bit,
             ds_config=strategy.get_ds_eval_config(offload=False),
-            temperature=strategy.args.temperature,
-            use_liger_kernel=args.use_liger_kernel,
         )
-        print("init_model", init_model)
+        print("init_model", initial_model)
 
     if args.enable_ema:
         ema_model = Actor(
@@ -119,11 +157,15 @@ def train(args):
     # gradient_checkpointing
     if args.gradient_checkpointing:
         actor.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
+            gradient_checkpointing_kwargs={
+                "use_reentrant": args.gradient_checkpointing_use_reentrant
+            }
         )
         if critic is not None:
             critic.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
+                gradient_checkpointing_kwargs={
+                    "use_reentrant": args.gradient_checkpointing_use_reentrant
+                }
             )
 
     # configure optimizer
@@ -132,7 +174,10 @@ def train(args):
     )
     if args.critic_pretrain:
         critic_optim = strategy.create_optimizer(
-            critic, lr=args.critic_learning_rate, betas=args.adam_betas, weight_decay=args.l2
+            critic,
+            lr=args.critic_learning_rate,
+            betas=args.adam_betas,
+            weight_decay=args.l2,
         )
     else:
         critic_optim = None
@@ -148,16 +193,131 @@ def train(args):
     #     train_split=args.prompt_split,
     # )
 
-    prompts_data = load_dataset(args.prompt_data, name=args.dataset_config, split="train")
-    prompts_data = prompts_data.remove_columns(
-        [col for col in prompts_data.column_names if col not in [args.input_key, args.label_key]]
-    )
+    # 定义处理函数
+    def preprocess_gsm8k(example: Dict[str, str]) -> Dict[str, str]:
+        """
+        Processes the "answer" field in a GSM8K dataset entry, formatting the final answer
+        in LaTeX's \(\boxed{}\) style.
 
-    args.system_prompt = SYSTEM_PROMPT
+        Args:
+            example (Dict[str, str]): A dictionary containing the "answer" field.
+
+        Returns:
+            Dict[str, str]: A dictionary with the updated "answer" field.
+        """
+        solution_str = example.get(
+            "answer", ""
+        ).strip()  # Ensure "answer" exists and remove extra spaces
+
+        # Use regex to extract the final numerical answer after '####'
+        match = re.search(r"\s*####\s*(-?[0-9,]+(?:\.[0-9]+)?)\s*", solution_str)
+
+        if match:
+            final_answer = match.group(1)  # Extract the number only
+            final_answer = final_answer.replace(",", "").replace(
+                "$", ""
+            )  # Clean unwanted characters
+
+            # Replace "#### number" with LaTeX boxed format
+            updated_answer = solution_str.replace(
+                f"#### {final_answer}", rf"\(\boxed{{{final_answer}}}\)"
+            )
+        else:
+            # If no match, return the original answer unchanged
+            updated_answer = solution_str
+
+        return {"answer": updated_answer}
+
+    def process_answer_to_latex(text: str) -> str:
+        """Convert answer text to LaTeX boxed format."""
+        # Clean up the text for LaTeX compatibility
+        text = text.replace("_", "\_")
+        text = text.replace("%", "\%")
+        text = text.replace("&", "\&")
+        text = text.replace("#", "\#")
+        text = text.replace("$", "\$")
+        text = re.sub(r"\\sqrt(\d+)", r"\\sqrt{\1}", text)  # 修正 \sqrt 语法
+        text = re.sub(
+            r"\\tfrac\{(\d+)\}(\d+)", r"\\tfrac{\1}{\2}", text
+        )  # 修正 \tfrac 语法
+        text = re.sub(r"\\frac (\d+) (\d+)", r"\\frac{\1}{\2}", text)  # 修正 \frac 语法
+        text = re.sub(
+            r"-\\frac{(\d+)} (\d+)", r"-\\frac{\1}{\2}", text
+        )  # 修正负分数格式
+        text = re.sub(
+            r"\\dfrac (\d+) (\d+)", r"\\dfrac{\1}{\2}", text
+        )  # 修正 \dfrac 语法
+        text = re.sub(
+            r"\\frac\\pi (\d+)", r"\\frac{\\pi}{\1}", text
+        )  # 修正 \frac\pi 语法
+
+        return f"\\boxed{{{text}}}"
+
+    def preprocess_math_lvl3to5(example):
+        # 获取ground truth答案
+        gt_answer = example.get("gt_answer", "")
+        if not gt_answer:
+            gt_answer = example.get("target", "")
+        if not gt_answer:
+            gt_answer = example.get("answer", "")
+        if not gt_answer:
+            gt_answer = example.get("ground_truth_answer", "")
+
+        # 格式化答案
+        formatted_answer = process_answer_to_latex(gt_answer)
+        return {"solution": formatted_answer}
+
+    system_prompt = TEMPLATE_FACTORY[args.system_prompt]
+
+    if "math_lvl3to5_8k" in args.prompt_data:
+        prompts_data = load_dataset(
+            "json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir
+        )
+    elif "math_lvl3to5_selected2k" in args.prompt_data:
+        prompts_data = load_dataset(
+            "json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir
+        )
+    elif "SimpleRL-Zoo-Data" in args.prompt_data:
+        prompts_data = dataset = load_dataset(
+            args.prompt_data,
+            data_files="train.parquet",
+            split="train",
+            cache_dir=args.cache_dir,
+        )
+    elif "forAIME2024_0326" in args.prompt_data:
+        prompts_data = load_dataset(
+            "json", data_files=args.prompt_data, split="train", cache_dir=args.cache_dir
+        )
+    else:
+        prompts_data = load_dataset(
+            args.prompt_data,
+            name=args.dataset_config,
+            split="train",
+            cache_dir=args.cache_dir,
+        )
+
+    if "gsm8k" in args.prompt_data:
+        prompts_data = prompts_data.map(preprocess_gsm8k)
+    if "math_lvl3to5" in args.prompt_data:
+        prompts_data = prompts_data.map(preprocess_math_lvl3to5)
+    if "SimpleRL-Zoo-Data" in args.prompt_data:
+        prompts_data = prompts_data.map(preprocess_math_lvl3to5)
+
+    prompts_data = prompts_data.remove_columns(
+        [
+            col
+            for col in prompts_data.column_names
+            if col not in [args.input_key, args.label_key]
+        ]
+    )
 
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
     prompts_dataset = PromptDataset(
-        prompts_data, tokenizer, strategy, sys_template=args.system_prompt, input_template=args.input_template
+        prompts_data,
+        tokenizer,
+        strategy,
+        sys_template=system_prompt,
+        input_template=args.input_template,
     )
 
     if args.pretrain_data:
@@ -348,6 +508,8 @@ if __name__ == "__main__":
     parser.add_argument("--train_batch_size", type=int, default=128, help="Global training batch size")
     parser.add_argument("--normalize_reward", action="store_true", default=False, help="Enable Reward Normazation")
     parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--top_k", type=int, default=50)
+    parser.add_argument("--min_p", type=float, default=None)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--freezing_actor_steps", type=int, default=-1, help="Used for critic initialization")
     parser.add_argument(
@@ -389,8 +551,12 @@ if __name__ == "__main__":
     parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
     parser.add_argument("--adam_offload", action="store_true", default=False, help="Offload Adam Optimizer")
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
-    parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
-    parser.add_argument("--use_liger_kernel", action="store_true", default=False, help="Enable Liger Kernel")
+    parser.add_argument(
+        "--flash_attn",
+        action="store_true",
+        default=False,
+        help="Enable FlashAttention2",
+    )
     parser.add_argument("--aux_loss_coef", type=float, default=0, help="MoE balancing loss")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
@@ -407,14 +573,45 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("--use_kl_loss", action="store_true", default=False, help="whether to use KL loss from GRPO")
+    parser.add_argument(
+        "--kl_clip_max", type=float, default=None, help="max KL clip value"
+    )
 
+    parser.add_argument(
+        "--debug", action="store_true", default=False, help="Will use debug mode"
+    )
     # reward functions
+    parser.add_argument(
+        "--policy_loss_fn",
+        type=str,
+        default=None,
+        help="Policy loss function. Possible values: 'ppo', 'grpo', 'drgrpo'",
+    )
+    parser.add_argument("--system_prompt", type=str, default="no", help="system prompt")
     parser.add_argument('--reward_func_names', nargs='+', type=str,
                        default=['accuracy', 'format', 'reasoning_steps', 'cosine'],
                        help="List of reward functions. Possible values: 'accuracy', 'format', 'reasoning_steps', 'cosine', 'repetition_penalty'")
     parser.add_argument('--reward_weights', nargs='+', type=float,
                         default=None,
                         help="List of reward functions weights.")
+    parser.add_argument(
+        "--normalize_rule_reward",
+        action="store_true",
+        default=False,
+        help="Enable Reward Normazation",
+    )
+    parser.add_argument(
+        "--with_reward_baseline",
+        action="store_true",
+        default=False,
+        help="Enable Reward Normazation",
+    )
+    parser.add_argument(
+        "--correct_reward", type=float, default=1.0, help="Correct reward score"
+    )
+    parser.add_argument(
+        "--incorrect_reward", type=float, default=0.0, help="Incorrect reward score"
+    )
     # cosine scaling parameters
     parser.add_argument('--cosine_min_value_wrong', type=float, default=-0.5,
                        help='Minimum reward for wrong answers')
@@ -452,6 +649,9 @@ if __name__ == "__main__":
     parser.add_argument("--value_head_prefix", type=str, default="score")
 
     # Custom dataset
+    parser.add_argument(
+        "--cache_dir", type=str, default=None, help="HF dataset or model cache dir"
+    )
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(
         "--prompt_data_probs",
@@ -533,5 +733,20 @@ if __name__ == "__main__":
 
         # Patch hub to download models from modelscope to speed up.
         patch_hub()
+
+    if args.debug:
+        import os
+        import debugpy
+
+        rank = int(os.environ.get("RANK", 0))  # 获取当前进程的RANK
+        flag = int(os.environ.get("DEBUG_FIRST", 0))
+        if flag == 0:
+            os.environ["DEBUG_FIRST"] = "1"
+            debug_port = 22333 + rank  # 按RANK递增端口
+            if rank == 0:
+                print(f"rank{rank} is waiting for debugger to connect ...")
+                debugpy.listen(("localhost", debug_port))
+                debugpy.wait_for_client()
+                print(f"rank{rank} debugger connected!")
 
     train(args)

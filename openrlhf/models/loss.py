@@ -5,7 +5,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .utils import masked_mean
+from .utils import masked_mean, drgrpo_masked_mean
 
 
 class GPTLMLoss(nn.Module):
@@ -53,7 +53,7 @@ class GPTLMLoss(nn.Module):
         return loss
 
 
-class PolicyLoss(nn.Module):
+class PPOPolicyLoss(nn.Module):
     """
     Policy Loss for PPO
     """
@@ -76,6 +76,61 @@ class PolicyLoss(nn.Module):
         surr2 = ratio.clamp(1 - self.clip_low, 1 + self.clip_high) * advantages
         loss = -torch.min(surr1, surr2)
         loss = masked_mean(loss, action_mask, dim=-1).mean()
+        return loss
+
+
+class GRPOPolicyLoss(nn.Module):
+    """
+    Policy Loss for PPO
+    """
+
+    def __init__(self, clip_eps: float = 0.2, clip_low: float = 0.2, clip_high: float = 0.2) -> None:
+        super().__init__()
+        self.clip_eps = clip_eps
+        self.clip_low = max(clip_eps, clip_low)
+        self.clip_high = max(clip_eps, clip_high)
+
+    def forward(
+        self,
+        log_probs: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        advantages: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        ratio = (log_probs - old_log_probs).exp()
+        surr1 = ratio * advantages
+        surr2 = ratio.clamp(1 - self.clip_low, 1 + self.clip_high) * advantages
+        loss = -torch.min(surr1, surr2)
+        loss = masked_mean(loss, action_mask, dim=-1).mean()
+        return loss
+
+
+class DRGRPOPolicyLoss(nn.Module):
+    """
+    Policy Loss for PPO
+    """
+
+    def __init__(
+        self, clip_eps: float = 0.2, clip_low: float = 0.2, clip_high: float = 0.2, generate_max_len: int = 1024
+    ) -> None:
+        super().__init__()
+        self.clip_eps = clip_eps
+        self.clip_low = max(clip_eps, clip_low)
+        self.clip_high = max(clip_eps, clip_high)
+        self.generate_max_len = generate_max_len
+
+    def forward(
+        self,
+        log_probs: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        advantages: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        ratio = (log_probs - old_log_probs).exp()
+        surr1 = ratio * advantages
+        surr2 = ratio.clamp(1 - self.clip_low, 1 + self.clip_high) * advantages
+        loss = -torch.min(surr1, surr2)
+        loss = drgrpo_masked_mean(loss, action_mask, dim=-1, generate_max_len=self.generate_max_len).mean()
         return loss
 
 

@@ -22,7 +22,7 @@ class AdaptiveKLController:
 class FixedKLController:
     """Fixed KL controller."""
 
-    def __init__(self, kl_coef):
+    def __init__(self, kl_coef: float):
         self.value = kl_coef
 
     def update(self, current, n_steps):

@@ -732,6 +732,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         )
 
         # init log probs
+        # 如果有初始模型，远程调用其 forward，异步获取 logprobs。
         if self.initial_model is not None:
             base_action_log_probs_ref = self.initial_model.forward.remote(
                 sequences_cpu, num_actions, attention_mask_cpu, logps_allgather=True, packed_seq_lens=packed_seq_lens
@@ -756,55 +757,71 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         else:
             value_ref = ray.put(None)
 
-        # rewards
-        r_refs = []
+        # Rewards handling
+        remote_rewards = []
+        if self.reward_funcs:
+            # 本地 reward 计算
+            # Handle custom reward functions
+            if not self.packing_samples:
+                completion_ids = sequences[:, -num_actions:]
+                completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+            else:
+                # For packed samples, we need to extract each completion separately
+                completion_ids = []
+                prompt_offset = 0
+                tokens_list = sequences_cpu.tolist()[0]
+                # num_actions 在 packed 模式下是一个列表，记录每个样本的 completion 长度
+                for i, (seq_len, completion_len) in enumerate(zip(packed_seq_lens, num_actions)):
+                    # prompt_len = seq_len - completion_len
+                    completion_start = prompt_offset + (seq_len - completion_len)
+                    completion_end = prompt_offset + seq_len
+                    # 只取 completion 部分
+                    completion_ids.append(tokens_list[completion_start:completion_end])
+                    # 更新下一个样本的起始位置
+                    prompt_offset += seq_len
+
+                completion_ids = torch.tensor(completion_ids, device=sequences_cpu.device)
+                completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+
+            # Compute rewards using reward functions
+            rewards, reward_func_metrics = self.compute_func_rewards(completions, samples.labels)
+
         # support remote RM API with ray
-        if not self.remote_rm_url:
-            for rm in self.reward_model:
-                r_refs.append(
-                    rm.forward.remote(
-                        sequences_cpu, attention_mask_cpu, packed_seq_lens=packed_seq_lens, pad_sequence=True
-                    )
-                )
-        else:
+        elif self.remote_rm_url is not None:
             # remote RM
             if self.strategy.ring_attn_group is None or self.strategy.ring_attn_rank == 0:
                 if not self.packing_samples:
                     queries = self.tokenizer.batch_decode(sequences_cpu, skip_special_tokens=False)
-                    completion_ids = sequences_cpu[:, -num_actions:]
-                    completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
                 else:
-                    # For packed samples, we need to extract each completion separately
-                    completion_ids = []
-                    prompt_offset = 0
+                    sequences_list = []
+                    offset = 0
                     tokens_list = sequences_cpu.tolist()[0]
-                    # num_actions 在 packed 模式下是一个列表，记录每个样本的 completion 长度
-                    for i, (seq_len, completion_len) in enumerate(zip(packed_seq_lens, num_actions)):
-                        # prompt_len = seq_len - completion_len
-                        completion_start = prompt_offset + (seq_len - completion_len)
-                        completion_end = prompt_offset + seq_len
-                        # 只取 completion 部分
-                        completion_ids.append(tokens_list[completion_start:completion_end])
-                        # 更新下一个样本的起始位置
-                        prompt_offset += seq_len
-
-                    completion_ids = torch.tensor(completion_ids, device=sequences_cpu.device)
-                    completions = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+                    for length in packed_seq_lens:
+                        sequences_list.append(tokens_list[offset : offset + length])
+                        offset += length
+                    queries = self.tokenizer.batch_decode(sequences_list, skip_special_tokens=False)
 
                 if self.custom_reward_func:
-                    r = self.custom_reward_func.remote(completions, samples.labels)
-                    r_refs.append(r)
+                    rewards = self.custom_reward_func.remote(queries, samples.prompts, samples.labels)
+                    remote_rewards.append(rewards)
                 else:
                     for rm in self.remote_rm_url:
-                        r = remote_rm_fn_ray.remote(
+                        rewards = remote_rm_fn_ray.remote(
                             rm, queries=queries, prompts=samples.prompts, labels=samples.labels
                         )
-                        r_refs.append(r)
+                        remote_rewards.append(rewards)
             else:
-                r_refs.append(ray.put(None))
+                remote_rewards.append(ray.put(None))
 
+        else:
+            for rm in self.reward_model:
+                remote_rewards.append(
+                    rm.forward.remote(
+                        sequences_cpu, attention_mask_cpu, packed_seq_lens=packed_seq_lens, pad_sequence=True
+                    )
+                )
         if args.colocate_all_models and not self.remote_rm_url:
-            ray.get(r_refs)
+            ray.get(remote_rewards)
             ray.get([self.reward_model[0].empty_cache.remote()])
 
         # log probs
@@ -821,17 +838,27 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         # wait initial/critic/reward model done
         start = time.time()
-        ref_values = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
+
+        # 如果 reward_funcs，获取 logprobs 和 value，reward 本地 to(device)。
+        if self.reward_funcs:
+            base_action_log_probs, value = ray.get([base_action_log_probs_ref, value_ref])
+            base_action_log_probs = base_action_log_probs.to(device) if base_action_log_probs is not None else None
+            value = value.to(device) if value is not None else None
+            rewards = rewards.to(device)
+
+        else:
+            ref_values = ray.get([base_action_log_probs_ref, value_ref] + remote_rewards)
+            base_action_log_probs, value = ref_values[0], ref_values[1]
+            base_action_log_probs = base_action_log_probs.to(device) if base_action_log_probs is not None else None
+            value = value.to(device) if value is not None else None
+            rewards = [r.to(device) for r in ref_values[2:]]
+            rewards = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+
         wait_time = time.time() - start
 
-        base_action_log_probs, value, rewards = ref_values[0], ref_values[1], ref_values[2:]
-        if base_action_log_probs is not None:
-            base_action_log_probs = base_action_log_probs.to(device)
-        if value is not None:
-            value = value.to(device)
-
         # broadcast rewards to all ring attention ranks when using remote RM
-        if self.remote_rm_url and self.strategy.ring_attn_group is not None:
+        # 如果是远程 reward 或自定义 reward，且有 ring attention group，则主 rank 广播 reward 给其他 rank。
+        if (self.remote_rm_url or self.reward_funcs) and self.strategy.ring_attn_group is not None:
             if self.strategy.ring_attn_rank == 0:
                 dist.broadcast_object_list(rewards, src=dist.get_rank(), group=self.strategy.ring_attn_group)
             else:
@@ -839,11 +866,10 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                     rewards, src=self.strategy.ring_attn_ranks[0], group=self.strategy.ring_attn_group
                 )
 
-        rewards = [r.to(device) for r in rewards]
-        r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
-
         # avoid CUDA OOM when colocate models
-        if args.colocate_critic_reward and not self.remote_rm_url:
+        # 如果共置，清理 reward_model 显存。
+        # 如果 actor 共置，同步并清理显存。
+        if args.colocate_critic_reward and not self.remote_rm_url and not self.reward_funcs:
             ray.get([self.reward_model[0].empty_cache.remote()])
 
         if args.colocate_actor_ref or args.colocate_all_models:
@@ -895,13 +921,18 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         if not args.use_kl_loss:
             base_action_log_probs = None
 
+        # 构造 info 字典，包含 KL、reward、长度等信息。
+        # 如果有 reward_funcs，补充 reward_func_metrics。
         info = {
             "kl": kl_mean,
-            "reward": r,
+            "reward": rewards,
             "response_length": samples.response_length,
             "total_length": samples.total_length,
             "num_actions": num_actions,
         }
+
+        if self.reward_funcs:
+            info.update(reward_func_metrics)
 
         if self.strategy.args.perf:
             self.perf_stats["actor_value_rm_time"] += actor_value_rm_time

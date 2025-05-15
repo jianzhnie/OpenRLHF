@@ -4,7 +4,7 @@ import torch
 
 
 class MovAvg:
-    """Class for moving average.
+    r"""Class for moving average.
 
     It will automatically exclude the infinity and NaN. Usage:
     ::
@@ -84,7 +84,7 @@ class RunningMeanStd:
         device: torch.device | None = None,
     ) -> None:
         # Convert inputs to torch tensors
-        self.device = device or torch.device('cpu')
+        self.device = device or torch.device("cpu")
         self.mean = torch.as_tensor(mean, dtype=torch.float64, device=self.device)
         self.var = torch.as_tensor(std, dtype=torch.float64, device=self.device) ** 2
         self.count = 0
@@ -96,7 +96,7 @@ class RunningMeanStd:
         if isinstance(data, np.ndarray):
             data = torch.from_numpy(data)
         data = torch.as_tensor(data, dtype=torch.float64, device=self.device)
-        
+
         normalized = (data - self.mean) / torch.sqrt(self.var + self.eps)
         if self.clip_max:
             normalized = torch.clamp(normalized, -self.clip_max, self.clip_max)
@@ -107,11 +107,11 @@ class RunningMeanStd:
         if isinstance(data, np.ndarray):
             data = torch.from_numpy(data)
         data = torch.as_tensor(data, dtype=torch.float64, device=self.device)
-        
+
         batch_count = data.shape[0]
         if batch_count == 0:
             return  # 忽略空 batch
-        
+
         batch_mean = torch.mean(data, dim=0)
         batch_var = torch.var(data, dim=0, unbiased=False)  # 使用有偏方差以匹配numpy行为
 
@@ -128,7 +128,7 @@ class RunningMeanStd:
         self.mean, self.var = new_mean, new_var
         self.count = total_count
 
-    def to(self, device: torch.device) -> 'RunningMeanStd':
+    def to(self, device: torch.device) -> "RunningMeanStd":
         """Move the normalizer to specified device."""
         self.device = device
         self.mean = self.mean.to(device)
@@ -137,27 +137,26 @@ class RunningMeanStd:
 
 
 # 示例使用
-if __name__ == '__main__':
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     normalizer = RunningMeanStd(device=device)
-    
+
     # 测试 numpy array
     batch1 = np.array([1.0, 2.0, 0.5])
     batch2 = np.array([3.0, 2.5, 1.5])
-    
+
     normalizer.update(batch1)
-    print("After batch1: Mean =", normalizer.mean.cpu().numpy(), 
-          "Std =", torch.sqrt(normalizer.var).cpu().numpy())
-    
+    print("After batch1: Mean =", normalizer.mean.cpu().numpy(), "Std =", torch.sqrt(normalizer.var).cpu().numpy())
+
     normalizer.update(batch2)
-    print("After batch2: Mean =", normalizer.mean.cpu().numpy(), 
-          "Std =", torch.sqrt(normalizer.var).cpu().numpy())
-    
+    print("After batch2: Mean =", normalizer.mean.cpu().numpy(), "Std =", torch.sqrt(normalizer.var).cpu().numpy())
+
     # 测试 torch tensor
     tensor_batch = torch.tensor([[1.5, 2.2], [2.8, 3.1]], device=device)
     normalizer.update(tensor_batch)
-    print("After tensor batch: Mean =", normalizer.mean.cpu().numpy(), 
-          "Std =", torch.sqrt(normalizer.var).cpu().numpy())
-    
+    print(
+        "After tensor batch: Mean =", normalizer.mean.cpu().numpy(), "Std =", torch.sqrt(normalizer.var).cpu().numpy()
+    )
+
     normed_rewards = normalizer.norm(tensor_batch)
     print("Normalized rewards:", normed_rewards.cpu().numpy())

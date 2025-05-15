@@ -7,9 +7,7 @@ import ray
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from vllm import LLM
-import numpy as np
 
-from openrlhf import ACCELERATOR_TYPE
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf import ACCELERATOR_TYPE
 
@@ -27,8 +25,9 @@ def get_all_env_variables():
 
 @ray.remote
 class LLMRayActor:
+
     def __init__(self, *args, bundle_indices: list = None, **kwargs):
-        # noset_visible_devices = kwargs.pop("noset_visible_devices")
+        noset_visible_devices = kwargs.pop("noset_visible_devices")
         if kwargs.get("distributed_executor_backend") == "ray":
             # a hack to make the script work.
             # stop ray from manipulating CUDA_VISIBLE_DEVICES
@@ -43,7 +42,7 @@ class LLMRayActor:
 
         num_gpus = kwargs.pop("num_gpus")
         if bundle_indices is not None:
-            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = "0.2"
+            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = str(num_gpus)
             os.environ["VLLM_RAY_BUNDLE_INDICES"] = ",".join(map(str, bundle_indices))
             print(f"creating LLM with bundle_indices={bundle_indices}")
 
@@ -149,33 +148,14 @@ def create_vllm_engines(
 
     for i in range(num_engines):
         bundle_indices = None
-        scheduling_strategy = None
+        if tensor_parallel_size > 1:
+            bundle_indices = list(range(i * tensor_parallel_size, (i + 1) * tensor_parallel_size))
 
-        # Hybrid engine
-        if shared_pg is not None:
-            assert vllm.__version__ >= "0.7.2", "Only vllm >= 0.7.2 supports hybrid engine"
-
-            if tensor_parallel_size > 1:
-                scheduling_strategy = PlacementGroupSchedulingStrategy(
-                    placement_group=shared_pg,
-                    placement_group_capture_child_tasks=True,
-                    placement_group_bundle_index=i * tensor_parallel_size,
-                )
-                bundle_indices = np.arange(i * tensor_parallel_size, (i + 1) * tensor_parallel_size).tolist()
-            else:
-                num_gpus = 0.2
-                scheduling_strategy = PlacementGroupSchedulingStrategy(
-                    placement_group=shared_pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=i
-                )
-        # Distributed RLHF
-        elif tensor_parallel_size > 1:
-            bundles = [{ACCELERATOR_TYPE: 1, "CPU": 1}] * tensor_parallel_size
-            pg = placement_group(bundles)
-            ray.get(pg.ready())
-
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg, placement_group_capture_child_tasks=True, placement_group_bundle_index=0
-            )
+        scheduling_strategy = PlacementGroupSchedulingStrategy(
+            placement_group=shared_pg,
+            placement_group_capture_child_tasks=True,
+            placement_group_bundle_index=i * tensor_parallel_size,
+        )
 
         if num_engines >= num_total_actors:
             num_actors = 1
@@ -186,7 +166,7 @@ def create_vllm_engines(
             LLMRayActor.options(
                 num_cpus=num_gpus,
                 num_gpus=num_gpus if ACCELERATOR_TYPE == "GPU" else 0,
-                resources=None if ACCELERATOR_TYPE == "GPU" else {ACCELERATOR_TYPE: tensor_parallel_size},
+                resources=None if ACCELERATOR_TYPE =="GPU" else {ACCELERATOR_TYPE: tensor_parallel_size},
                 scheduling_strategy=scheduling_strategy if ACCELERATOR_TYPE == "GPU" else None,
             ).remote(
                 model=pretrain,
