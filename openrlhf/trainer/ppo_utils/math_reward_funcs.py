@@ -1,7 +1,6 @@
-import json
 import math
 import re
-from typing import List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, List, Optional, Sequence, Set, Tuple, Union
 
 from latex2sympy2_extended import NormalizationConfig
 from math_verify.grader import verify
@@ -23,22 +22,50 @@ def is_e2b_available() -> bool:
 
 if is_e2b_available():
     from dotenv import load_dotenv
-    from e2b_code_interpreter import Sandbox
 
     load_dotenv()
 
 
 class BaseRewardFunction:
-    """Placeholder for the base reward function class."""
+    """
+    Abstract base class for reward functions.
+
+    Subclasses should implement the `__call__` method to return a list of reward scores
+    for each completion.
+    """
 
     def __init__(self, **kwargs):
+        """
+        Initialize the base reward function with optional configuration parameters.
+        """
         self.config = kwargs
 
-    def __call__(self, completions, solution=None, **kwargs) -> List[float]:
-        raise NotImplementedError
+    def __call__(self, completions: List[str], solution: Optional[str] = None, **kwargs: Any) -> List[float]:
+        """
+        Compute reward scores for the provided completions.
 
-    def validate_input(self, completions, solution=None):
-        """统一的输入验证."""
+        Args:
+            completions (List[str]): A list of generated completion strings.
+            solution (Optional[str]): An optional ground truth or reference solution.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            List[float]: A list of reward scores corresponding to each completion.
+        """
+        raise NotImplementedError("Subclasses must implement this method.")
+
+    def validate_input(self, completions: List[str], solution: Optional[str] = None) -> None:
+        """
+        Perform input validation for completions and optional solution.
+
+        Args:
+            completions (List[str]): A list of completion strings.
+            solution (Optional[str]): A reference solution, if applicable.
+        """
+        if not isinstance(completions, list) or not all(isinstance(c, str) for c in completions):
+            raise ValueError("`completions` must be a list of strings.")
+        if solution is not None and not isinstance(solution, str):
+            raise ValueError("`solution` must be a string if provided.")
 
 
 def extract_solution(solution_str: str, method: str = "strict") -> Optional[str]:
@@ -753,83 +780,54 @@ class RepetitionPenalty(BaseRewardFunction):
         return rewards
 
 
-def extract_code(completion: str) -> str:
-    pattern = re.compile(r"```python\n(.*?)```", re.DOTALL)
-    matches = pattern.findall(completion)
-    extracted_answer = matches[-1] if len(matches) >= 1 else ""
-    return extracted_answer
+class SoftOverlong(BaseRewardFunction):
+    """
+    Reward function that penalizes completions exceeding a soft length limit.
 
-
-class CodeReward(BaseRewardFunction):
-    """Reward function that evaluates code snippets using the E2B code
-    interpreter.
-
-    Assumes the dataset contains a `verification_info` column with test cases.
+    The penalty is proportional to how much the completion length exceeds the
+    expected maximum length (soft_max_length - soft_cache_length).
     """
 
-    def __call__(self, completions, solution, **kwargs) -> List[float]:
-        if not is_e2b_available():
-            raise ImportError(
-                "E2B is not available and required for this reward function. Please install E2B with "
-                "`pip install e2b-code-interpreter` and add an API key to a `.env` file."
-            )
+    def __init__(
+        self, tokenizer: PreTrainedTokenizer = None, soft_max_length: int = 8000, soft_cache_length: int = 2000
+    ) -> None:
+        """
+        Initialize the SoftOverlong reward function.
 
-        rewards = []
-        # TODO: add support for other languages in E2B: https://e2b.dev/docs/code-interpreting/supported-languages
-        try:
-            """Returns a reward function that evaluates code snippets in a
-            sandbox."""
-            evaluation_script_template = """
-            import subprocess
-            import json
+        Args:
+            tokenizer (Any): A tokenizer with an `encode` method.
+            soft_max_length (int): The soft maximum allowed length.
+            soft_cache_length (int): The length of the cached prompt.
+        """
+        super().__init__()
+        assert soft_cache_length < soft_max_length, "soft_cache_length must be less than soft_max_length"
+        self.tokenizer = tokenizer
+        self.soft_max_length = soft_max_length
+        self.soft_cache_length = soft_cache_length
 
-            def evaluate_code(code, test_cases):
-                passed = 0
-                total = len(test_cases)
-                exec_timeout = 5
+    def __call__(self, completions: List[str], solution: List[str], **kwargs: Any) -> List[float]:
+        """
+        Compute the reward for each completion based on its length.
 
-                for case in test_cases:
-                    process = subprocess.run(
-                        ["python3", "-c", code],
-                        input=case["input"],
-                        text=True,
-                        capture_output=True,
-                        timeout=exec_timeout
-                    )
+        Args:
+            completions (List[str]): A list of generated completion strings.
+            solution (List[str]): List of ground truth solutions.
+            **kwargs: Additional keyword arguments (unused here).
 
-                    if process.returncode != 0:  # Error in execution
-                        continue
+        Returns:
+            List[float]: A list of reward values where more negative scores indicate
+                         a greater length violation.
+        """
 
-                    output = process.stdout.strip()
-                    if output.strip() == case["output"].strip():
-                        passed += 1
+        rewards: List[float] = []
+        expected_len = self.soft_max_length - self.soft_cache_length
 
-                success_rate = (passed / total)
-                return success_rate
+        for completion in completions:
+            completion_length = len(self.tokenizer.encode(completion))
+            exceed_len = completion_length - expected_len
+            penalty = min(-exceed_len / self.soft_cache_length, 0.0)
+            rewards.append(penalty)
 
-            code_snippet = {code}
-            test_cases = json.loads({test_cases})
-
-            evaluate_code(code_snippet, test_cases)
-            """
-            verification_info = kwargs["verification_info"]
-            scripts = [
-                evaluation_script_template.format(
-                    code=json.dumps(code), test_cases=json.dumps(json.dumps(info["test_cases"]))
-                )
-                for code, info in zip(completions, verification_info)
-            ]
-            with Sandbox(timeout=30, request_timeout=3) as sbx:
-                for script in scripts:
-                    execution = sbx.run_code(script, language=verification_info["language"])
-                    try:
-                        output = float(execution.text)
-                    except (TypeError, ValueError):
-                        output = 0.0
-                    rewards.append(output)
-        except Exception as e:
-            logger.info(f"Error from E2B executor: {e}")
-            rewards = [0.0] * len(completions)
         return rewards
 
 
@@ -844,4 +842,5 @@ relu_based_reward_func_mapping = {
     "length": LengthReward,
     "cosine": CosineScaledReward,
     "repetition": RepetitionPenalty,
+    "softoverlong": SoftOverlong,
 }
