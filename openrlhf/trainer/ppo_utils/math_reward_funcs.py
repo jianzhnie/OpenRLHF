@@ -779,30 +779,35 @@ class RepetitionPenalty(BaseRewardFunction):
         return rewards
 
 
-class SoftOverlong(BaseRewardFunction):
+class SoftOverlongPenalty(BaseRewardFunction):
     """
-    Reward function that penalizes completions exceeding a soft length limit.
+    Reward function that penalizes overlong completions. It is used to penalize overlong completions,
+    but not to reward shorter completions. Reference: Eq. (13) from the DAPO paper (https://huggingface.co/papers/2503.14476)
+    The penalty is proportional to how much the completion length exceeds the expected maximum length (max_completion_length - soft_cache_length).
 
-    The penalty is proportional to how much the completion length exceeds the
-    expected maximum length (soft_max_length - soft_cache_length).
+    Args:
+        tokenizer (PreTrainedTokenizer): Tokenizer for measuring response length.
+        max_completion_length (int): The soft maximum allowed length.
+        soft_cache_length (int): The length of the cached prompt.
     """
 
     def __init__(
-        self, tokenizer: PreTrainedTokenizer = None, soft_max_length: int = 8000, soft_cache_length: int = 2000
+        self, tokenizer: PreTrainedTokenizer = None, max_completion_length: int = 8000, soft_cache_length: int = 2000
     ) -> None:
         """
         Initialize the SoftOverlong reward function.
 
         Args:
             tokenizer (Any): A tokenizer with an `encode` method.
-            soft_max_length (int): The soft maximum allowed length.
+            max_completion_length (int): The soft maximum allowed length.
             soft_cache_length (int): The length of the cached prompt.
         """
         super().__init__()
-        assert soft_cache_length < soft_max_length, "soft_cache_length must be less than soft_max_length"
+        assert soft_cache_length < max_completion_length, "soft_cache_length must be less than max_completion_length"
         self.tokenizer = tokenizer
-        self.soft_max_length = soft_max_length
+        self.max_completion_length = max_completion_length
         self.soft_cache_length = soft_cache_length
+        self.expected_len = self.max_completion_length - self.soft_cache_length
 
     def __call__(self, completions: List[str], solution: List[str], **kwargs: Any) -> List[float]:
         """
@@ -819,14 +824,12 @@ class SoftOverlong(BaseRewardFunction):
         """
 
         rewards: List[float] = []
-        expected_len = self.soft_max_length - self.soft_cache_length
-
         # 批量计算所有completions的长度
         completion_lengths = [len(ids) for ids in self.tokenizer(completions, add_special_tokens=False)["input_ids"]]
 
         # 计算惩罚值
         for completion_length in completion_lengths:
-            exceed_len = completion_length - expected_len
+            exceed_len = completion_length - self.expected_len
             penalty = min(-exceed_len / self.soft_cache_length, 0.0)
             rewards.append(penalty)
 
@@ -844,5 +847,5 @@ relu_based_reward_func_mapping = {
     "length": LengthReward,
     "cosine": CosineScaledReward,
     "repetition": RepetitionPenalty,
-    "softoverlong": SoftOverlong,
+    "softoverlong": SoftOverlongPenalty,
 }
