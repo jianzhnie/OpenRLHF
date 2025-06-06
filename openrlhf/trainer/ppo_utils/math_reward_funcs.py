@@ -1,29 +1,60 @@
 import math
 import re
-from typing import Any, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, List, Optional, Set, Tuple, Union
 
 from latex2sympy2_extended import NormalizationConfig
-from math_verify.grader import verify
-from math_verify.parser import ExprExtractionConfig, LatexExtractionConfig, parse
+
+try:
+    from math_verify.errors import TimeoutException
+    from math_verify.grader import verify
+    from math_verify.metric import math_metric
+    from math_verify.parser import ExprExtractionConfig, LatexExtractionConfig, parse
+except ImportError:
+    print("To use Math-Verify, please install it first by running `pip install math-verify`.")
+
+
 from transformers import PreTrainedTokenizer
-from transformers.utils.import_utils import _is_package_available
 
 from openrlhf.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
 
-# Use same as transformers.utils.import_utils
-_e2b_available = _is_package_available("e2b")
 
+def extract_solution(solution_str: str, method: str = "strict") -> Optional[str]:
+    """
+    Extracts the final numerical solution from a given string.
 
-def is_e2b_available() -> bool:
-    return _e2b_available
+    Args:
+        solution_str (str): The string containing the solution.
+        method (str): Extraction method ('strict' or 'flexible').
+                      - 'strict': Looks for a specific pattern (#### <number>).
+                      - 'flexible': Extracts the last valid number from the string.
 
+    Returns:
+        Optional[str]: Extracted solution as a string if found, otherwise None.
+    """
+    if method not in {"strict", "flexible"}:
+        raise ValueError("Method must be either 'strict' or 'flexible'.")
 
-if is_e2b_available():
-    from dotenv import load_dotenv
+    if method == "strict":
+        # Look for a number prefixed by '#### '
+        match = re.search(r"#### (-?[0-9.,]+)", solution_str)
+        if match:
+            # Extract the number and clean formatting (remove commas, dollar signs)
+            return match.group(1).replace(",", "").replace("$", "")
+        return None  # No valid match found
 
-    load_dotenv()
+    elif method == "flexible":
+        # Find all numeric values in the string
+        numbers = re.findall(r"-?[0-9.,]+", solution_str)
+
+        # Filter out invalid numbers (e.g., '.' alone)
+        numbers = [num for num in numbers if num not in {"", "."}]
+
+        # Return the last valid number found, or None if none exist
+        return numbers[-1] if numbers else None
+
+    return None  # Redundant but keeps function structure clear
 
 
 class BaseRewardFunction:
@@ -66,43 +97,6 @@ class BaseRewardFunction:
             raise ValueError("`completions` must be a list of strings.")
         if solution is not None and not isinstance(solution, str):
             raise ValueError("`solution` must be a string if provided.")
-
-
-def extract_solution(solution_str: str, method: str = "strict") -> Optional[str]:
-    """
-    Extracts the final numerical solution from a given string.
-
-    Args:
-        solution_str (str): The string containing the solution.
-        method (str): Extraction method ('strict' or 'flexible').
-                      - 'strict': Looks for a specific pattern (#### <number>).
-                      - 'flexible': Extracts the last valid number from the string.
-
-    Returns:
-        Optional[str]: Extracted solution as a string if found, otherwise None.
-    """
-    if method not in {"strict", "flexible"}:
-        raise ValueError("Method must be either 'strict' or 'flexible'.")
-
-    if method == "strict":
-        # Look for a number prefixed by '#### '
-        match = re.search(r"#### (-?[0-9.,]+)", solution_str)
-        if match:
-            # Extract the number and clean formatting (remove commas, dollar signs)
-            return match.group(1).replace(",", "").replace("$", "")
-        return None  # No valid match found
-
-    elif method == "flexible":
-        # Find all numeric values in the string
-        numbers = re.findall(r"-?[0-9.,]+", solution_str)
-
-        # Filter out invalid numbers (e.g., '.' alone)
-        numbers = [num for num in numbers if num not in {"", "."}]
-
-        # Return the last valid number found, or None if none exist
-        return numbers[-1] if numbers else None
-
-    return None  # Redundant but keeps function structure clear
 
 
 class GSM8KAccuracyReward:
@@ -254,12 +248,13 @@ class MathAccuracyReward(BaseRewardFunction):
 
         rewards: List[float] = []
         for content, sol in zip(completions, solution):
-            sol = f"$${sol}$$"
-            gold_parsed = self.parse_expression(sol, extraction_config=self.gold_extraction_config)
+            # Wrap the ground truth in \boxed{} format for verification
+            sol_boxed = "\\boxed{" + sol + "}"
+            gold_parsed = self.parse_expression(sol_boxed, extraction_config=self.gold_extraction_config)
 
             if not gold_parsed:
                 # Assign neutral reward if the ground truth cannot be parsed
-                logger.info(f"Warning: Failed to parse gold solution: {sol}")
+                logger.info(f"Warning: Failed to parse gold solution: {sol_boxed}")
                 rewards.append(self.correct_reward)
                 continue
 
@@ -283,7 +278,7 @@ class MathAccuracyReward(BaseRewardFunction):
         return rewards
 
 
-class MathAccuracyRewardV2(BaseRewardFunction):
+class MathVerifyReward(BaseRewardFunction):
     """Computes accuracy-based rewards for mathematical expressions using
     latex2sympy2.
 
@@ -291,11 +286,6 @@ class MathAccuracyRewardV2(BaseRewardFunction):
         - Supports both **LaTeX** and **symbolic expressions**.
         - Uses an **aggregation function** to handle multiple parsing strategies.
         - Adds **robust error handling** and logging.
-
-    **Reward Criteria:**
-        - ✅ 1.0 → Response is mathematically equivalent to the solution.
-        - ❌ 0.0 → Response is incorrect.
-        - 🔄 0.5 → Ground truth cannot be parsed.
 
     **Args:**
         completions (List[str]): Model-generated completions.
@@ -309,31 +299,13 @@ class MathAccuracyRewardV2(BaseRewardFunction):
         super().__init__(**kwargs)
 
         # Ensure extraction config is a list (not a tuple)
-        self.gold_extraction_config: Sequence = (
-            [LatexExtractionConfig()] if gold_is_latex else [ExprExtractionConfig()]
+        self.verify_func = math_metric(
+            gold_extraction_target=(LatexExtractionConfig() if gold_is_latex else ExprExtractionConfig(),),
+            pred_extraction_target=(ExprExtractionConfig(), LatexExtractionConfig()),
+            aggregation_function=max,
+            precision=6,
         )
-        self.answer_extraction_config: Sequence = [ExprExtractionConfig(), LatexExtractionConfig()]
-        self.precision: int = 6
-
-    def parse_expression(self, expression: str, extraction_config: List[LatexExtractionConfig]):
-        """Parses a mathematical expression using latex2sympy2.
-
-        Args:
-            expression (str): The input mathematical expression in LaTeX.
-            extraction_config (Sequence[ExtractionTarget]): Extraction configuration.
-
-        Returns:
-            Parsed expression object or None if parsing fails.
-        """
-        if not expression.strip():
-            return None  # 避免解析空字符串
-
-        try:
-            result = parse(expression, extraction_mode="first_match", extraction_config=extraction_config)
-            return result or None  # 直接返回结果或 None
-        except Exception as e:
-            logger.info(f"Parsing failed for expression: {expression}, Error: {e}")
-            return None
+        self.timeout_score = 0
 
     def __call__(self, completions: List[str], solution: List[str], **kwargs) -> List[float]:
         """Computes accuracy-based rewards for mathematical expressions.
@@ -347,27 +319,15 @@ class MathAccuracyRewardV2(BaseRewardFunction):
         """
         rewards = []
         for content, sol in zip(completions, solution):
-            gold_parsed = self.parse_expression(sol, extraction_config=self.gold_extraction_config)
-
-            if not gold_parsed:
-                # Assign neutral reward if the ground truth cannot be parsed
-                logger.warning(f"Failed to parse ground truth solution: {sol}")
-                rewards.append(0.5)
-                continue
-
-            answer_parsed = self.parse_expression(content, extraction_config=self.answer_extraction_config)
-
-            if not answer_parsed:
-                # Penalize unparseable model outputs
-                rewards.append(0.0)
-                continue
-
+            reward = 0.0
+            # Wrap the ground truth in \boxed{} format for verification
+            sol_boxed = "\\boxed{" + sol + "}"
             try:
-                # Reward 1 if the content is the same as the ground truth, 0 otherwise
-                reward = float(verify(gold_parsed, answer_parsed, self.precision))
-            except Exception as e:
-                logger.error(f"Verification failed: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}")
-                reward = 0.0
+                reward, _ = self.verify_func([sol_boxed], [content])
+            except Exception:
+                pass
+            except TimeoutException:
+                reward = self.timeout_score
 
             rewards.append(reward)
 
