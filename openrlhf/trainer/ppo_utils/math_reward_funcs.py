@@ -588,8 +588,7 @@ class LengthReward(BaseRewardFunction):
         correctness_scores = self.accuracy_orm(completions, solution, **kwargs)
 
         # Calculate response lengths using tokenizer
-        lengths = [len(self.tokenizer.encode(content, add_special_tokens=False)) for content in completions]
-
+        lengths = [len(ids) for ids in self.tokenizer(completions, add_special_tokens=False)["input_ids"]]
         # Determine min and max lengths for scaling
         min_len, max_len = min(lengths), max(lengths)
 
@@ -822,8 +821,11 @@ class SoftOverlong(BaseRewardFunction):
         rewards: List[float] = []
         expected_len = self.soft_max_length - self.soft_cache_length
 
-        for completion in completions:
-            completion_length = len(self.tokenizer.encode(completion))
+        # 批量计算所有completions的长度
+        completion_lengths = [len(ids) for ids in self.tokenizer(completions, add_special_tokens=False)["input_ids"]]
+
+        # 计算惩罚值
+        for completion_length in completion_lengths:
             exceed_len = completion_length - expected_len
             penalty = min(-exceed_len / self.soft_cache_length, 0.0)
             rewards.append(penalty)

@@ -1,6 +1,6 @@
 from typing import List
 import torch
-from openrlhf.trainer.ppo_utils.reward_funcs import MathAccuracyReward
+from openrlhf.trainer.ppo_utils.math_reward_funcs import MathAccuracyReward
 
 reward_fn = MathAccuracyReward()
 
