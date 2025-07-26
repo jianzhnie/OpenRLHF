@@ -269,6 +269,16 @@ class MathAccuracyReward(BaseRewardFunction):
                 is_correct = verify(answer_parsed, gold_parsed)
 
                 reward = self.correct_reward if is_correct else self.incorrect_reward
+            except ValueError as e:
+                # Handle specific ValueError for nan/zoo evaluation
+                if "Can't evaluate nan or zoo" in str(e):
+                    logger.warning(
+                        f"Mathematical expression contains nan/zoo: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}"
+                    )
+                    reward = self.incorrect_reward
+                else:
+                    # Re-raise other ValueError exceptions
+                    raise
             except Exception as e:
                 logger.warning(f"Verification failed: {e}, Answer: {answer_parsed}, Gold: {gold_parsed}")
                 reward = self.incorrect_reward
@@ -799,7 +809,7 @@ class SoftOverlongPenalty(BaseRewardFunction):
 relu_based_reward_func_mapping = {
     "gsm8k": GSM8KAccuracyReward,
     "accuracy": MathAccuracyReward,
-    "accuracy_v2": MathAccuracyRewardV2,
+    "mathverify_accuracy": MathVerifyReward,
     "format": FormatReward,
     "react_format": ReActFormat,
     "tag_reward": TagCountReward,
